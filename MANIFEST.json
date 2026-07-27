@@ -1,0 +1,277 @@
+{
+  "project": "QBIT NOVA Native",
+  "version": "0.4.0",
+  "creator": "Universal Dragon Aslam",
+  "stage": "authenticated_approvals",
+  "boundary": "software_virtual_qcpu",
+  "approval_authentication": "HMAC-SHA-256",
+  "public_key_signature": false,
+  "python_runtime_dependency": false,
+  "qbit_nova_c_touched": false,
+  "security": {
+    "source_scope_binding": true,
+    "expiry_validation": true,
+    "tamper_detection": true,
+    "constant_time_mac_comparison": true,
+    "blocked_capability_override": false,
+    "revocation_ledger": false,
+    "replay_ledger": false
+  },
+  "files": [
+    {
+      "path": "Makefile",
+      "bytes": 603,
+      "sha256": "3cb25a48ba4b7363c6ca9389af0fa7807551781a5b55c3849b7bd4926af6c8a5"
+    },
+    {
+      "path": "README.md",
+      "bytes": 2369,
+      "sha256": "630b0eb71f4fd290a91d6ed8b7490c5c28cd46ff908c2345b7c736e1f6355813"
+    },
+    {
+      "path": "build/DEMO_KEY_NOT_FOR_PRODUCTION.txt",
+      "bytes": 87,
+      "sha256": "bb49675ac9ecbc35d1cba09398e09e87ce299b8a2363864ffe7cdef2f9216f58"
+    },
+    {
+      "path": "build/approval-issue-v04.txt",
+      "bytes": 236,
+      "sha256": "ae7c5489aeb05c0f7ce0ed771922133c837cecfe059ae0880e3cce702f5faa3a"
+    },
+    {
+      "path": "build/approval-verify-v04.txt",
+      "bytes": 143,
+      "sha256": "236b138a4e0261a01de91d9207ac2ed796d032025c517c0015cc15a247081ee9"
+    },
+    {
+      "path": "build/approval.o",
+      "bytes": 12072,
+      "sha256": "d7a452ddf42de6acc5b4f5de7c151d534bfec39c1f8d31d6185bd45487b906de"
+    },
+    {
+      "path": "build/demo-test-key.bin",
+      "bytes": 32,
+      "sha256": "3eb1bd439947eb762998e566ccc2e099c791118b2f40579cc4f7da2b5061b7f9"
+    },
+    {
+      "path": "build/guard.o",
+      "bytes": 7416,
+      "sha256": "85f4140766c43bbda7687e4de3863d47a01851fd5498d08469a5548eb5d3ad81"
+    },
+    {
+      "path": "build/lexer.o",
+      "bytes": 9696,
+      "sha256": "c2f4267741d7fdedc1cac2a6db76f1048247a679b6041ebdcd9f16ef631fe16a"
+    },
+    {
+      "path": "build/main.o",
+      "bytes": 20880,
+      "sha256": "03a85e5c8be2b4a14bae670ce8ab0e40247390475d2d4ce4b9ac62690bb471fc"
+    },
+    {
+      "path": "build/model-approval-v04.qna",
+      "bytes": 271,
+      "sha256": "0b4b687f8f9e41c5c6d24207eb359494c45612e24e049fa4ae93f207cb6b6c80"
+    },
+    {
+      "path": "build/model-receipt-v04.json",
+      "bytes": 620,
+      "sha256": "fce2d5568c6e86dc588e453e1ead6fde39a9ae3954cdf5752a75db3787e2e0f7"
+    },
+    {
+      "path": "build/model-run-v04.txt",
+      "bytes": 495,
+      "sha256": "fcf47b459d481423db9a3cadb72bca7675992db38387d6178ad31d69f03001f7"
+    },
+    {
+      "path": "build/parser.o",
+      "bytes": 8680,
+      "sha256": "e28232376ccf17636be364df44f2625a4d6dfcd6fd8c959ca7c80b2ebddc5d71"
+    },
+    {
+      "path": "build/qbc.o",
+      "bytes": 5224,
+      "sha256": "81e9cc7f364ab6b596bbe949a020f4dbdb4b505fe5f3034c81a253ef24865347"
+    },
+    {
+      "path": "build/qir.o",
+      "bytes": 16784,
+      "sha256": "437f9b42ee535515308d2bf666a8027ad5f348b023461268c56896e77b5c7744"
+    },
+    {
+      "path": "build/qnova",
+      "bytes": 65536,
+      "sha256": "d28cb2a00d7f20cee420894f7f7704961beab090527308a9607a165d6d38fd84"
+    },
+    {
+      "path": "build/sha256.o",
+      "bytes": 4048,
+      "sha256": "5298afaa4ca0fbcf5a23c731117226376b73eedd41d3ba878a318f31028b1251"
+    },
+    {
+      "path": "build/util.o",
+      "bytes": 5984,
+      "sha256": "3695626ad02ad03821461779430ec8baa72d20f749b5d90718db6786519d51ee"
+    },
+    {
+      "path": "build/vm.o",
+      "bytes": 11648,
+      "sha256": "d0b6dfbe2a8c9c4ed76719a6d2cd2a305b505ec056f1b0221a623a79fb9f24ec"
+    },
+    {
+      "path": "docs/ARCHITECTURE.md",
+      "bytes": 721,
+      "sha256": "39c112f89b57faf91f708e2176a4682a3da36f83534880602ea0791a2414a594"
+    },
+    {
+      "path": "docs/AUTHENTICATED_APPROVAL_V04.md",
+      "bytes": 1511,
+      "sha256": "b06dee82378bbf17e8dd5a189cc5c29dca93c14fa76d0da9275bcefbe5d56dd3"
+    },
+    {
+      "path": "docs/CAPABILITY_GUARD_V03.md",
+      "bytes": 1050,
+      "sha256": "cd026d3502996d0f6480df9df46a927f2ae0bd65618fb1817ee0fad748298797"
+    },
+    {
+      "path": "docs/NEXT_STAGES.md",
+      "bytes": 589,
+      "sha256": "19339434aae10d08828af606e0db559b3c6bf49f50e32c03e5b062d0f1b783fe"
+    },
+    {
+      "path": "docs/TYPED_QIR_V02.md",
+      "bytes": 842,
+      "sha256": "b1f78b220b66b304399e471e72d83f1012bb241d2dfa316ed9d6c00aab8acfec"
+    },
+    {
+      "path": "examples/approval_model.qn",
+      "bytes": 98,
+      "sha256": "5bdcd8a7e6cf1464151e96d4bd73f25b80557e62c2111445667dea50ef5ecfb6"
+    },
+    {
+      "path": "examples/bell.qn",
+      "bytes": 165,
+      "sha256": "a399e88711d3465fbcf7fa6ad46cd7f32e791640b590c5f727046c3131486934"
+    },
+    {
+      "path": "examples/blocked_shell.qn",
+      "bytes": 85,
+      "sha256": "7c96c4ee57c3687020ea210db07e657c6ced3424ec627adab6213196637c8554"
+    },
+    {
+      "path": "examples/ghz3.qn",
+      "bytes": 154,
+      "sha256": "0934d5c09d0d651f253da285a3733b4e97c3e2c283d7835c1d1a76e00af0875f"
+    },
+    {
+      "path": "examples/single.qn",
+      "bytes": 81,
+      "sha256": "7cc2124d76f7a94a0d047ad0f6a48ed0ec536591552efb7339d11cc6e8387bb3"
+    },
+    {
+      "path": "include/qn.h",
+      "bytes": 1371,
+      "sha256": "443f9283c94d65fc0c7930fefcefa8e86f6603a50f5da604f2eb606985872b12"
+    },
+    {
+      "path": "include/qn_approval.h",
+      "bytes": 1740,
+      "sha256": "7e46e55e6529e719ada1dfabf36e968ba5e9479fa0491058f6fbe04b3717d4a7"
+    },
+    {
+      "path": "include/qn_ast.h",
+      "bytes": 1164,
+      "sha256": "62e3eadd3ed62ef4eae2fb44333f45725cd5ebfb55c35dd0d84a873f0e259040"
+    },
+    {
+      "path": "include/qn_guard.h",
+      "bytes": 2138,
+      "sha256": "3c6d1aa5b87cb8e66be8398f34c502373a4902dacb5b9813f69f5751ee1211fb"
+    },
+    {
+      "path": "include/qn_lexer.h",
+      "bytes": 808,
+      "sha256": "9f07e45fa62fa2bdd324b3789296fa967b4ef27d29b03516f5ff59536cd275d7"
+    },
+    {
+      "path": "include/qn_parser.h",
+      "bytes": 174,
+      "sha256": "530ce4dcc3391553cef98b86a2bca8fb24815064a53f71196566a7365873ef78"
+    },
+    {
+      "path": "include/qn_qbc.h",
+      "bytes": 1245,
+      "sha256": "f14f46a37b734a9a4210af61e2ae1a8dcf499c669576e7d10535e55a41e9c925"
+    },
+    {
+      "path": "include/qn_qir.h",
+      "bytes": 1474,
+      "sha256": "71315ada3a99e95cce5c85b2cf52af7efd261eb9ea00b7a23938bf14da0bd81c"
+    },
+    {
+      "path": "include/qn_vm.h",
+      "bytes": 985,
+      "sha256": "8ba52636979f0b0a067a3d72d18055352886e79e025a3109f0e7c2020cfe2da4"
+    },
+    {
+      "path": "src/approval.c",
+      "bytes": 16527,
+      "sha256": "653b07e6d6b5fa92e0a19187f741fa621cffeadd5795c493d053d97865d2cb11"
+    },
+    {
+      "path": "src/guard.c",
+      "bytes": 6492,
+      "sha256": "4330dc5abdd5543e1540afe1426296dce1a708f78f49247cd6dc4ff5fca05a71"
+    },
+    {
+      "path": "src/lexer.c",
+      "bytes": 6159,
+      "sha256": "19a0975cccbd16c083e8585bcbafe767bca937f9e6712e3c6300e61368ca6de6"
+    },
+    {
+      "path": "src/main.c",
+      "bytes": 19574,
+      "sha256": "fb169518155daeefc50788f3657044c2a938453596b695ed7a485bc26293bd55"
+    },
+    {
+      "path": "src/parser.c",
+      "bytes": 8467,
+      "sha256": "91fc60e81921bd54e32c482a36b8eec36ed5bb6b5247eb82cd6917b766949178"
+    },
+    {
+      "path": "src/qbc.c",
+      "bytes": 7782,
+      "sha256": "cb001beb20b9c13256260689565f27d9fc0543a7c1b1bc9047ef9c845d79db16"
+    },
+    {
+      "path": "src/qir.c",
+      "bytes": 18793,
+      "sha256": "70e72e0610ab2970d5a290c17dfceabeccbfc18a701c09f0fd7cce9d556274b4"
+    },
+    {
+      "path": "src/sha256.c",
+      "bytes": 3571,
+      "sha256": "e6191d3c81b702e32a6362669138870800b8cc25be36dbcbabc1eb8943e589f2"
+    },
+    {
+      "path": "src/util.c",
+      "bytes": 3704,
+      "sha256": "6306c9320f76a4c97ac8ecc3ee77aab87a8b11aaa961b5604313c150809674c3"
+    },
+    {
+      "path": "src/vm.c",
+      "bytes": 9000,
+      "sha256": "0257a53799384656c08e90b3f5bd71099836b4c568a17253d1b92e80b3b915dd"
+    },
+    {
+      "path": "tests/bad_unknown_register.qn",
+      "bytes": 66,
+      "sha256": "9b36bf6c912403bd9c4de36402c01f668c29b9d28c6ca001abac02035f436ca9"
+    },
+    {
+      "path": "tests/run_tests.sh",
+      "bytes": 4405,
+      "sha256": "d18d1e5f7b4e45c00a52c58b5cd2db5961f5369276e0db8f787d132138a35b7c"
+    }
+  ]
+}

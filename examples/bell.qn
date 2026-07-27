@@ -1,0 +1,9 @@
+# QBIT NOVA Native v0.1
+# Bell correlation: only |00> or |11>.
+qreg pair[2] := |00>
+h pair[0]
+cx pair[0] pair[1]
+shots 64
+seed 42
+measure pair -> result
+emit result

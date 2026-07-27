@@ -1,0 +1,6 @@
+requires shell.exec
+qbit test := |0>
+shots 1
+seed 4
+measure test -> proof
+emit proof

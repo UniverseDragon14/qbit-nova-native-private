@@ -1,0 +1,4 @@
+qbit dragon := |0>
+h missing
+measure dragon -> result
+emit result

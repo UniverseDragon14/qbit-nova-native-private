@@ -1,0 +1,6 @@
+qbit dragon := |0>
+h dragon
+shots 20
+seed 7
+measure dragon -> result
+emit result

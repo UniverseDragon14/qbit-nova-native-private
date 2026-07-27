@@ -1,0 +1,7 @@
+# Compact intent expands deterministically to H + CX chain.
+qreg dragon[3] := |000>
+ghz dragon
+shots 100
+seed 20260728
+measure dragon -> proof
+emit proof

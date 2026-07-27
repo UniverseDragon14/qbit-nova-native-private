@@ -1,0 +1,7 @@
+requires model.exec
+qbit brain := |0>
+h brain
+shots 16
+seed 404
+measure brain -> proof
+emit proof
