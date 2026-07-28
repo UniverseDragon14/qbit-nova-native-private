@@ -128,20 +128,36 @@ echo "=== GUARDED EXECUTION WITH ED25519 ==="
 "$BIN" run examples/approval_model.qn \
   --signed-approval-file "$TMP/model.qns" \
   --approval-public-key-file "$TMP/ed-public-a.key" \
+  --replay-ledger-file "$TMP/replay-a.qnrl" \
   --now 2000000100 \
   --receipt "$TMP/receipt-a.json" \
   > "$TMP/signed-run.out"
 grep -q '^QBIT_NOVA_NATIVE_RUN_V05$' "$TMP/signed-run.out"
 grep -q '^approval_scheme=ed25519$' "$TMP/signed-run.out"
 grep -q '^approved_capabilities=model.exec$' "$TMP/signed-run.out"
+grep -q '^approval_replay=consumed$' "$TMP/signed-run.out"
 grep -Eq '^approval_issuer_fingerprint=[0-9a-f]{64}$' \
   "$TMP/signed-run.out"
 grep -q '"approval_scheme": "ed25519"' "$TMP/receipt-a.json"
+
+echo "=== REPLAYED RUN REJECTION ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --approval-public-key-file "$TMP/ed-public-a.key" \
+  --replay-ledger-file "$TMP/replay-a.qnrl" \
+  --now 2000000100 \
+  >"$TMP/replay-run.out" 2>"$TMP/replay-run.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5204' "$TMP/replay-run.err"
 
 echo "=== GUARDED EXECUTION THROUGH TRUST STORE ==="
 "$BIN" run examples/approval_model.qn \
   --signed-approval-file "$TMP/model.qns" \
   --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-trust.qnrl" \
   --now 2000000100 \
   > "$TMP/signed-trust-run.out"
 grep -q '^QBIT_NOVA_NATIVE_RUN_V05$' \
@@ -150,14 +166,78 @@ grep -q '^approval_scheme=ed25519$' \
   "$TMP/signed-trust-run.out"
 grep -q '^approved_capabilities=model.exec$' \
   "$TMP/signed-trust-run.out"
+grep -q '^approval_replay=consumed$' \
+  "$TMP/signed-trust-run.out"
 
 echo "=== DETERMINISTIC RECEIPT ==="
 "$BIN" run examples/approval_model.qn \
   --signed-approval-file "$TMP/model.qns" \
   --approval-public-key-file "$TMP/ed-public-a.key" \
+  --replay-ledger-file "$TMP/replay-b.qnrl" \
   --now 2000000100 \
   --receipt "$TMP/receipt-b.json" >/dev/null
 cmp "$TMP/receipt-a.json" "$TMP/receipt-b.json"
+
+echo "=== EXEC REPLAY BOUNDARY ==="
+"$BIN" build examples/approval_model.qn \
+  -o "$TMP/approval-model.qbc" >/dev/null
+
+"$BIN" exec "$TMP/approval-model.qbc" \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-exec.qnrl" \
+  --now 2000000100 \
+  > "$TMP/exec-first.out"
+
+grep -q '^approval_replay=consumed$' \
+  "$TMP/exec-first.out"
+
+set +e
+"$BIN" exec "$TMP/approval-model.qbc" \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-exec.qnrl" \
+  --now 2000000100 \
+  >"$TMP/exec-replay.out" \
+  2>"$TMP/exec-replay.err"
+STATUS=$?
+set -e
+
+test "$STATUS" -eq 7
+grep -q 'QN-E5204' "$TMP/exec-replay.err"
+
+echo "=== PREFLIGHT FAILURE DOES NOT CONSUME ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-preflight.qnrl" \
+  --shots 1000001 \
+  --now 2000000100 \
+  >"$TMP/preflight.out" 2>"$TMP/preflight.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 8
+grep -q 'QN-E5302' "$TMP/preflight.err"
+test ! -e "$TMP/replay-preflight.qnrl"
+
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-preflight.qnrl" \
+  --now 2000000100 >/dev/null
+
+echo "=== SIGNED EXECUTION WITHOUT LEDGER REJECTION ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --now 2000000100 \
+  >"$TMP/no-ledger.out" 2>"$TMP/no-ledger.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5201' "$TMP/no-ledger.err"
 
 echo "=== WRONG PUBLIC KEY REJECTION ==="
 set +e
@@ -413,5 +493,6 @@ echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_REPLAY_EXECUTION_BOUNDARY_V052_STEP5"
 echo "PASS: QBIT_NOVA_TRUSTED_ISSUER_CLI_V052_STEP3"
 echo "PASS: QBIT_NOVA_OPENSSL_ED25519_APPROVAL_TEST_SUITE_V05"

@@ -30,6 +30,19 @@ Rules:
 - The ledger must live in a trusted local directory. Advisory locks do not
   defend against an administrator replacing ancestor path components.
 
-This step provides the persistent replay-ledger foundation only.
-It does not yet wire token consumption into `run` or `exec`.
-Execution-boundary integration is the next stage.
+Execution-boundary integration:
+
+- `run` and `exec` require `--replay-ledger-file` whenever an
+  Ed25519 `--signed-approval-file` is supplied.
+- Approval verification, trust resolution, capability checks, and
+  bounded runtime preflight complete before consumption.
+- The token digest is consumed atomically immediately before VM entry.
+- Failed preflight does not consume the token.
+- Once consumed, a later runtime or receipt failure does not restore
+  the token. This is intentional attempt-once behavior.
+- `approval verify-ed25519` remains non-mutating.
+- HMAC v0.4 remains a legacy compatibility path without replay
+  enforcement in this stage.
+- Successful run output records `approval_replay=consumed`.
+
+Revocation checks are not implemented yet.

@@ -6,6 +6,7 @@
 #include "qn_approval.h"
 #include "qn_signed_approval.h"
 #include "qn_trust_store.h"
+#include "qn_replay_ledger.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -38,6 +39,7 @@ static void usage(FILE *f) {
         "            [--signed-approval-file token.qns]\n"
         "            [--approval-public-key-file PUBLIC]\n"
         "            [--trust-store-file STORE]\n"
+        "            [--replay-ledger-file LEDGER]\n"
         "            [--approval-file token.qna --approval-key-file KEY]\n"
         "            [--now UNIX] [--receipt file.json]\n"
         "  qnova exec <file.qbc> [same execution options]\n"
@@ -116,6 +118,7 @@ typedef struct {
     const char *signed_approval_file;
     const char *approval_public_key_file;
     const char *trust_store_file;
+    const char *replay_ledger_file;
     uint64_t approval_now;
     bool has_approval_now;
     QNGuardPolicy policy;
@@ -150,6 +153,8 @@ static void parse_run_opts(int argc,
             options->approval_public_key_file=argv[++i];
         } else if(!strcmp(argv[i],"--trust-store-file") && i+1<argc) {
             options->trust_store_file=argv[++i];
+        } else if(!strcmp(argv[i],"--replay-ledger-file") && i+1<argc) {
+            options->replay_ledger_file=argv[++i];
         } else if(!strcmp(argv[i],"--now") && i+1<argc) {
             options->approval_now=parse_u64(argv[++i],"now");
             options->has_approval_now=true;
@@ -248,6 +253,7 @@ static QNStatus apply_approval_to_policy(
     bool has_signed_file = options->signed_approval_file != NULL;
     bool has_public_key = options->approval_public_key_file != NULL;
     bool has_trust_store = options->trust_store_file != NULL;
+    bool has_replay_ledger = options->replay_ledger_file != NULL;
 
     if (has_hmac_file != has_hmac_key) {
         qn_diag_set_code(
@@ -284,6 +290,19 @@ static QNStatus apply_approval_to_policy(
             0,
             "signed approval key source requires "
             "--signed-approval-file"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    if (has_signed_file != has_replay_ledger) {
+        qn_diag_set_code(
+            diag,
+            "QN-E5201",
+            0,
+            0,
+            "Ed25519 execution requires both "
+            "--signed-approval-file and "
+            "--replay-ledger-file"
         );
         return QN_ERR_RUNTIME;
     }
@@ -401,6 +420,56 @@ static QNStatus apply_approval_to_policy(
     );
     return QN_OK;
 }
+
+
+static QNStatus preflight_before_replay_consume(
+    const QNBytecode *bc,
+    uint32_t requested_shots,
+    const QNGuardPolicy *policy,
+    QNDiagnostic *diag
+) {
+    QNStatus status = qn_guard_enforce(
+        bc->capability_mask,
+        policy,
+        diag
+    );
+
+    if (status != QN_OK) {
+        return status;
+    }
+
+    uint32_t shots = requested_shots
+        ? requested_shots
+        : bc->default_shots;
+
+    if (!shots || shots > QN_MAX_SHOTS) {
+        qn_diag_set_code(
+            diag,
+            "QN-E5302",
+            0,
+            0,
+            "shots must be 1..%u",
+            QN_MAX_SHOTS
+        );
+        return QN_ERR_LIMIT;
+    }
+
+    if (bc->total_qubits > QN_MAX_QUBITS ||
+        bc->total_qubits >=
+            (unsigned int)(sizeof(size_t) * 8u)) {
+        qn_diag_set_code(
+            diag,
+            "QN-E5303",
+            0,
+            0,
+            "qubit count exceeds VM addressable limit"
+        );
+        return QN_ERR_LIMIT;
+    }
+
+    return QN_OK;
+}
+
 
 int main(int argc,char **argv) {
     if(argc<2){ usage(stderr); return 1; }
@@ -1068,6 +1137,45 @@ int main(int argc,char **argv) {
             return print_diag(st,&diag);
         }
 
+        st=preflight_before_replay_consume(
+            &bc,
+            options.shots,
+            &options.policy,
+            &diag
+        );
+
+        if(st!=QN_OK) {
+            qn_bytecode_free(&bc);
+            return print_diag(st,&diag);
+        }
+
+        bool replay_consumed=false;
+
+        if(options.signed_approval_file) {
+            st=qn_replay_ledger_consume(
+                options.replay_ledger_file,
+                options.policy.approval_digest,
+                &replay_consumed,
+                &diag
+            );
+
+            if(st!=QN_OK || !replay_consumed) {
+                if(st==QN_OK) {
+                    qn_diag_set_code(
+                        &diag,
+                        "QN-E5202",
+                        0,
+                        0,
+                        "replay ledger did not consume token"
+                    );
+                    st=QN_ERR_IO;
+                }
+
+                qn_bytecode_free(&bc);
+                return print_diag(st,&diag);
+            }
+        }
+
         QNRunResult result={0};
         st=qn_vm_run_guarded(
             &bc,
@@ -1077,7 +1185,14 @@ int main(int argc,char **argv) {
             &result,
             &diag
         );
-        if(st==QN_OK) qn_print_result(&bc,&result,stdout);
+        if(st==QN_OK) {
+            qn_print_result(&bc,&result,stdout);
+
+            if(replay_consumed) {
+                printf("approval_replay=consumed\n");
+            }
+        }
+
         if(st==QN_OK && options.receipt) {
             st=qn_write_receipt(
                 options.receipt,
