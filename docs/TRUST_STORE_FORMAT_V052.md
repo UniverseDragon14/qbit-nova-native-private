@@ -25,5 +25,16 @@ Rules:
 - Parsing is transactional: output is replaced only after complete success.
 - A header-only file is valid and represents an empty, deny-all trust store.
 
-This stage does not provide CLI wiring, replay protection,
-revocation, persistent updates, or execution-boundary consumption.
+CLI integration:
+
+- `approval verify-ed25519` accepts exactly one of
+  `--public-key` or `--trust-store-file`.
+- `run` and `exec` accept `--trust-store-file` together with
+  `--signed-approval-file`.
+- The token issuer fingerprint is resolved to a trusted public key
+  before Ed25519 signature verification.
+- Direct raw public-key verification remains supported for
+  v0.5 compatibility.
+
+This stage does not provide replay protection, revocation,
+persistent trust-store updates, or token consumption.

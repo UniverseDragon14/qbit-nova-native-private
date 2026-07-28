@@ -17,6 +17,27 @@ printf 'fedcba9876543210fedcba9876543210' > "$TMP/ed-private-b.key"
   --private "$TMP/ed-private-b.key" \
   --public "$TMP/ed-public-b.key" >/dev/null
 
+PUBLIC_A_HEX="$(
+  od -An -tx1 -v "$TMP/ed-public-a.key" |
+    tr -d '[:space:]'
+)"
+PUBLIC_B_HEX="$(
+  od -An -tx1 -v "$TMP/ed-public-b.key" |
+    tr -d '[:space:]'
+)"
+
+test "${#PUBLIC_A_HEX}" -eq 64
+test "${#PUBLIC_B_HEX}" -eq 64
+
+printf 'QNTS1\nissuer\t%s\tcreator-primary\n' \
+  "$PUBLIC_A_HEX" > "$TMP/trust-a.qnts"
+
+printf 'QNTS1\nissuer\t%s\tcreator-secondary\n' \
+  "$PUBLIC_B_HEX" > "$TMP/trust-b.qnts"
+
+printf 'QNTS1\n' > "$TMP/trust-empty.qnts"
+printf 'BAD!!\n' > "$TMP/trust-malformed.qnts"
+
 echo "=== VERSION ==="
 "$BIN" version > "$TMP/version.out"
 grep -q 'QBIT NOVA Native 0.5.0' "$TMP/version.out"
@@ -89,7 +110,19 @@ echo "=== VERIFY ED25519 APPROVAL ==="
   --now 2000000100 \
   > "$TMP/verify.out"
 grep -q '^status=valid$' "$TMP/verify.out"
+grep -q '^key_source=public-key$' "$TMP/verify.out"
 grep -q '^capability=model.exec$' "$TMP/verify.out"
+
+echo "=== VERIFY ED25519 THROUGH TRUST STORE ==="
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --now 2000000100 \
+  > "$TMP/verify-trust.out"
+grep -q '^status=valid$' "$TMP/verify-trust.out"
+grep -q '^key_source=trust-store$' "$TMP/verify-trust.out"
+grep -q '^capability=model.exec$' "$TMP/verify-trust.out"
 
 echo "=== GUARDED EXECUTION WITH ED25519 ==="
 "$BIN" run examples/approval_model.qn \
@@ -104,6 +137,19 @@ grep -q '^approved_capabilities=model.exec$' "$TMP/signed-run.out"
 grep -Eq '^approval_issuer_fingerprint=[0-9a-f]{64}$' \
   "$TMP/signed-run.out"
 grep -q '"approval_scheme": "ed25519"' "$TMP/receipt-a.json"
+
+echo "=== GUARDED EXECUTION THROUGH TRUST STORE ==="
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --now 2000000100 \
+  > "$TMP/signed-trust-run.out"
+grep -q '^QBIT_NOVA_NATIVE_RUN_V05$' \
+  "$TMP/signed-trust-run.out"
+grep -q '^approval_scheme=ed25519$' \
+  "$TMP/signed-trust-run.out"
+grep -q '^approved_capabilities=model.exec$' \
+  "$TMP/signed-trust-run.out"
 
 echo "=== DETERMINISTIC RECEIPT ==="
 "$BIN" run examples/approval_model.qn \
@@ -125,6 +171,87 @@ STATUS=$?
 set -e
 test "$STATUS" -eq 7
 grep -q 'QN-E5003' "$TMP/wrong-key.err"
+
+echo "=== UNTRUSTED ISSUER STORE REJECTION ==="
+set +e
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-b.qnts" \
+  --now 2000000100 \
+  >"$TMP/untrusted-store.out" \
+  2>"$TMP/untrusted-store.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5104' "$TMP/untrusted-store.err"
+
+echo "=== EMPTY TRUST STORE REJECTION ==="
+set +e
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-empty.qnts" \
+  --now 2000000100 \
+  >"$TMP/empty-store.out" \
+  2>"$TMP/empty-store.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5104' "$TMP/empty-store.err"
+
+echo "=== MALFORMED TRUST STORE REJECTION ==="
+set +e
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-malformed.qnts" \
+  --now 2000000100 \
+  >"$TMP/malformed-store.out" \
+  2>"$TMP/malformed-store.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5113' "$TMP/malformed-store.err"
+
+echo "=== DUAL SIGNED KEY SOURCE REJECTION ==="
+set +e
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --public-key "$TMP/ed-public-a.key" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --now 2000000100 \
+  >"$TMP/dual-source.out" \
+  2>"$TMP/dual-source.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5004' "$TMP/dual-source.err"
+
+echo "=== SIGNED TOKEN WITHOUT KEY SOURCE REJECTION ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --now 2000000100 \
+  >"$TMP/no-key-source.out" \
+  2>"$TMP/no-key-source.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5004' "$TMP/no-key-source.err"
+
+echo "=== TRUST STORE WITHOUT SIGNED TOKEN REJECTION ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --now 2000000100 \
+  >"$TMP/store-without-token.out" \
+  2>"$TMP/store-without-token.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5004' "$TMP/store-without-token.err"
 
 echo "=== TAMPERED PAYLOAD REJECTION ==="
 cp "$TMP/model.qns" "$TMP/tampered.qns"
@@ -286,4 +413,5 @@ echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_TRUSTED_ISSUER_CLI_V052_STEP3"
 echo "PASS: QBIT_NOVA_OPENSSL_ED25519_APPROVAL_TEST_SUITE_V05"

@@ -5,6 +5,7 @@
 #include "qn_vm.h"
 #include "qn_approval.h"
 #include "qn_signed_approval.h"
+#include "qn_trust_store.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -25,7 +26,8 @@ static void usage(FILE *f) {
         "            [-o token.qns] [--issued-at UNIX]\n"
         "            [--nonce-hex 32HEX] [--context TEXT]\n"
         "  qnova approval verify-ed25519 <file.qn> <token.qns>\n"
-        "            --public-key PUBLIC [--now UNIX]\n"
+        "            (--public-key PUBLIC | --trust-store-file STORE)\n"
+        "            [--now UNIX]\n"
         "  qnova approval issue <file.qn> <capability> --key-file KEY\n"
         "            --expires-at UNIX [-o token.qna] [--issued-at UNIX]\n"
         "            [--nonce TEXT]\n"
@@ -35,6 +37,7 @@ static void usage(FILE *f) {
         "  qnova run <file.qn> [--shots N] [--seed N] [--policy safe|deny-all]\n"
         "            [--signed-approval-file token.qns]\n"
         "            [--approval-public-key-file PUBLIC]\n"
+        "            [--trust-store-file STORE]\n"
         "            [--approval-file token.qna --approval-key-file KEY]\n"
         "            [--now UNIX] [--receipt file.json]\n"
         "  qnova exec <file.qbc> [same execution options]\n"
@@ -112,6 +115,7 @@ typedef struct {
     const char *approval_key_file;
     const char *signed_approval_file;
     const char *approval_public_key_file;
+    const char *trust_store_file;
     uint64_t approval_now;
     bool has_approval_now;
     QNGuardPolicy policy;
@@ -144,6 +148,8 @@ static void parse_run_opts(int argc,
             options->signed_approval_file=argv[++i];
         } else if(!strcmp(argv[i],"--approval-public-key-file") && i+1<argc) {
             options->approval_public_key_file=argv[++i];
+        } else if(!strcmp(argv[i],"--trust-store-file") && i+1<argc) {
+            options->trust_store_file=argv[++i];
         } else if(!strcmp(argv[i],"--now") && i+1<argc) {
             options->approval_now=parse_u64(argv[++i],"now");
             options->has_approval_now=true;
@@ -164,6 +170,73 @@ static uint64_t current_unix_time(void) {
     return (uint64_t)now;
 }
 
+
+static QNStatus resolve_signed_approval_public_key(
+    const char *public_key_path,
+    const char *trust_store_path,
+    const QNSignedApprovalToken *token,
+    uint8_t public_key_out[QN_ED25519_PUBLIC_KEY_BYTES],
+    QNDiagnostic *diag
+) {
+    bool has_public_key = public_key_path != NULL;
+    bool has_trust_store = trust_store_path != NULL;
+
+    if (!token ||
+        !public_key_out ||
+        has_public_key == has_trust_store) {
+        qn_diag_set_code(
+            diag,
+            "QN-E5004",
+            0,
+            0,
+            "signed approval requires exactly one of "
+            "--approval-public-key-file/--public-key "
+            "or --trust-store-file"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    if (has_public_key) {
+        uint8_t *loaded = qn_signed_approval_load_key(
+            public_key_path,
+            QN_ED25519_PUBLIC_KEY_BYTES,
+            diag
+        );
+
+        if (!loaded) {
+            return QN_ERR_IO;
+        }
+
+        memcpy(
+            public_key_out,
+            loaded,
+            QN_ED25519_PUBLIC_KEY_BYTES
+        );
+
+        free(loaded);
+        return QN_OK;
+    }
+
+    QNTrustStore store;
+    QNStatus status = qn_trust_store_load_file(
+        trust_store_path,
+        &store,
+        diag
+    );
+
+    if (status != QN_OK) {
+        return status;
+    }
+
+    return qn_trust_store_resolve(
+        &store,
+        token->issuer_fingerprint,
+        public_key_out,
+        diag
+    );
+}
+
+
 static QNStatus apply_approval_to_policy(
     const RunOptions *options,
     const QNBytecode *bc,
@@ -174,6 +247,7 @@ static QNStatus apply_approval_to_policy(
     bool has_hmac_key = options->approval_key_file != NULL;
     bool has_signed_file = options->signed_approval_file != NULL;
     bool has_public_key = options->approval_public_key_file != NULL;
+    bool has_trust_store = options->trust_store_file != NULL;
 
     if (has_hmac_file != has_hmac_key) {
         qn_diag_set_code(
@@ -186,13 +260,30 @@ static QNStatus apply_approval_to_policy(
         return QN_ERR_RUNTIME;
     }
 
-    if (has_signed_file != has_public_key) {
+    unsigned int signed_key_sources =
+        (has_public_key ? 1u : 0u) +
+        (has_trust_store ? 1u : 0u);
+
+    if (has_signed_file && signed_key_sources != 1u) {
         qn_diag_set_code(
             diag,
             "QN-E5004",
             0,
             0,
-            "--signed-approval-file and --approval-public-key-file must be used together"
+            "--signed-approval-file requires exactly one of "
+            "--approval-public-key-file or --trust-store-file"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    if (!has_signed_file && signed_key_sources != 0u) {
+        qn_diag_set_code(
+            diag,
+            "QN-E5004",
+            0,
+            0,
+            "signed approval key source requires "
+            "--signed-approval-file"
         );
         return QN_ERR_RUNTIME;
     }
@@ -221,12 +312,17 @@ static QNStatus apply_approval_to_policy(
         );
         if (status != QN_OK) return status;
 
-        uint8_t *public_key = qn_signed_approval_load_key(
+        uint8_t public_key[QN_ED25519_PUBLIC_KEY_BYTES];
+
+        status = resolve_signed_approval_public_key(
             options->approval_public_key_file,
-            QN_ED25519_PUBLIC_KEY_BYTES,
+            options->trust_store_file,
+            &token,
+            public_key,
             diag
         );
-        if (!public_key) return QN_ERR_RUNTIME;
+
+        if (status != QN_OK) return status;
 
         QNCapabilityMask approved = 0u;
         status = qn_signed_approval_verify(
@@ -238,7 +334,6 @@ static QNStatus apply_approval_to_policy(
             &approved,
             diag
         );
-        free(public_key);
 
         if (status != QN_OK) return status;
 
@@ -572,11 +667,14 @@ int main(int argc,char **argv) {
             const char *source_path = argv[3];
             const char *token_path = argv[4];
             const char *public_path = NULL;
+            const char *trust_store_path = NULL;
             uint64_t now = current_unix_time();
 
             for(int i=5;i<argc;i++) {
                 if(!strcmp(argv[i],"--public-key") && i+1<argc) {
                     public_path=argv[++i];
+                } else if(!strcmp(argv[i],"--trust-store-file") && i+1<argc) {
+                    trust_store_path=argv[++i];
                 } else if(!strcmp(argv[i],"--now") && i+1<argc) {
                     now=parse_u64(argv[++i],"now");
                 } else {
@@ -587,10 +685,17 @@ int main(int argc,char **argv) {
                 }
             }
 
-            if(!public_path) {
-                fprintf(stderr,
-                        "error[QN-E5004]: verify-ed25519 requires --public-key\n");
-                return QN_ERR_PARSE;
+            if((public_path == NULL) ==
+               (trust_store_path == NULL)) {
+                qn_diag_set_code(
+                    &diag,
+                    "QN-E5004",
+                    0,
+                    0,
+                    "verify-ed25519 requires exactly one of "
+                    "--public-key or --trust-store-file"
+                );
+                return print_diag(QN_ERR_RUNTIME,&diag);
             }
 
             QNBytecode bc={0};
@@ -605,14 +710,16 @@ int main(int argc,char **argv) {
                 &diag
             );
 
-            uint8_t *public_key = NULL;
+            uint8_t public_key[QN_ED25519_PUBLIC_KEY_BYTES];
+
             if(status==QN_OK) {
-                public_key=qn_signed_approval_load_key(
+                status=resolve_signed_approval_public_key(
                     public_path,
-                    QN_ED25519_PUBLIC_KEY_BYTES,
+                    trust_store_path,
+                    &token,
+                    public_key,
                     &diag
                 );
-                if(!public_key) status=QN_ERR_IO;
             }
 
             QNCapabilityMask approved = 0u;
@@ -627,7 +734,6 @@ int main(int argc,char **argv) {
                     &diag
                 );
             }
-            free(public_key);
 
             if(status==QN_OK) {
                 char token_hex[65];
@@ -636,6 +742,12 @@ int main(int argc,char **argv) {
                 qn_hex32(token.issuer_fingerprint,issuer_hex);
                 printf("QBIT_NOVA_ED25519_APPROVAL_VERIFY_V05\n");
                 printf("status=valid\n");
+                printf(
+                    "key_source=%s\n",
+                    trust_store_path ?
+                        "trust-store" :
+                        "public-key"
+                );
                 printf("capability=%s\n",
                        qn_capability_name(approved));
                 printf("issuer_fingerprint=%s\n",issuer_hex);
