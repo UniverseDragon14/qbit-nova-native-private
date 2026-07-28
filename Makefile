@@ -13,9 +13,10 @@ LDLIBS += $(OPENSSL_LIBS)
 
 SRC := src/main.c src/util.c src/sha256.c src/lexer.c src/parser.c \
        src/qir.c src/guard.c src/approval.c src/ed25519.c \
-       src/signed_approval.c src/qbc.c src/vm.c
+       src/signed_approval.c src/trust_store.c src/qbc.c src/vm.c
 OBJ := $(SRC:src/%.c=build/%.o)
 BIN := build/qnova
+TRUST_TEST := build/test_trust_store
 
 .PHONY: all clean test check-deps install
 
@@ -36,7 +37,15 @@ build/%.o: src/%.c | build
 $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) $(OBJ) -o $@ $(LDLIBS)
 
-test: check-deps $(BIN)
+$(TRUST_TEST): tests/test_trust_store.c src/trust_store.c src/ed25519.c \
+                  src/sha256.c src/util.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) \
+		tests/test_trust_store.c src/trust_store.c \
+		src/ed25519.c src/sha256.c src/util.c \
+		-o $@ $(LDLIBS)
+
+test: check-deps $(BIN) $(TRUST_TEST)
+	./$(TRUST_TEST)
 	bash tests/run_tests.sh
 
 install: check-deps $(BIN)
