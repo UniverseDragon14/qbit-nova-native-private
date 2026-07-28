@@ -5,6 +5,7 @@
 
 #define QN_TRUST_STORE_MAX_ISSUERS 32u
 #define QN_TRUST_STORE_LABEL_MAX 64u
+#define QN_TRUST_STORE_MAX_FILE_BYTES 4096u
 
 typedef struct {
     bool occupied;
@@ -36,6 +37,19 @@ QNStatus qn_trust_store_resolve(
     const QNTrustStore *store,
     const uint8_t fingerprint[QN_ED25519_FINGERPRINT_BYTES],
     uint8_t public_key_out[QN_ED25519_PUBLIC_KEY_BYTES],
+    QNDiagnostic *diag
+);
+
+QNStatus qn_trust_store_parse_text(
+    const uint8_t *data,
+    size_t size,
+    QNTrustStore *out,
+    QNDiagnostic *diag
+);
+
+QNStatus qn_trust_store_load_file(
+    const char *path,
+    QNTrustStore *out,
     QNDiagnostic *diag
 );
 
