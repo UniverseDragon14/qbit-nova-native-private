@@ -1,18 +1,14 @@
-# Compiled outputs
 build/
 *.o
 *.a
 *.so
 *.dylib
 *.exe
-
-# QBIT NOVA generated artifacts
 *.qbc
 *.qna
+*.qns
 *.receipt
 *-receipt.json
-
-# Private keys and secrets
 *.key
 *.pem
 *.p12
@@ -21,13 +17,9 @@ build/
 .env.*
 secrets/
 private/
-
-# Release archives
 *.zip
 *.tar
 *.tar.gz
-
-# Editor / operating-system files
 .DS_Store
 .vscode/
 .idea/

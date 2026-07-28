@@ -15,6 +15,9 @@ typedef struct {
     QNCapabilityMask approved_capabilities;
     bool has_approval_digest;
     uint8_t approval_digest[32];
+    char approval_scheme[24];
+    bool has_approval_issuer;
+    uint8_t approval_issuer_fingerprint[32];
     QNHistogramEntry *entries;
     size_t entry_count;
     uint8_t qbc_digest[32];

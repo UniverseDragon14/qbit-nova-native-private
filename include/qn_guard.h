@@ -45,6 +45,9 @@ typedef struct {
     QNCapabilityMask approved;
     bool has_approval_digest;
     uint8_t approval_digest[32];
+    char approval_scheme[24];
+    bool has_approval_issuer;
+    uint8_t approval_issuer_fingerprint[32];
 } QNGuardPolicy;
 
 typedef struct {

@@ -101,6 +101,23 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
             sizeof(out->approval_digest)
         );
     }
+    snprintf(
+        out->approval_scheme,
+        sizeof(out->approval_scheme),
+        "%s",
+        policy->approval_scheme[0]
+            ? policy->approval_scheme
+            : "none"
+    );
+    out->has_approval_issuer =
+        policy->has_approval_issuer;
+    if (policy->has_approval_issuer) {
+        memcpy(
+            out->approval_issuer_fingerprint,
+            policy->approval_issuer_fingerprint,
+            sizeof(out->approval_issuer_fingerprint)
+        );
+    }
 
     if(!shots) shots=bc->default_shots;
     if(!seed) seed=bc->default_seed;
@@ -164,7 +181,7 @@ void qn_print_result(const QNBytecode *bc, const QNRunResult *result, FILE *stre
     char qbc_hex[65], source_hex[65];
     qn_hex32(result->qbc_digest,qbc_hex);
     qn_hex32(bc->source_digest,source_hex);
-    fprintf(stream,"QBIT_NOVA_NATIVE_RUN_V04\n");
+    fprintf(stream,"QBIT_NOVA_NATIVE_RUN_V05\n");
     fprintf(stream,"boundary=software_virtual_qcpu\n");
     fprintf(stream,"physical_qpu=false\n");
     fprintf(stream,"qubits=%u\nshots=%u\nseed=%llu\n",
@@ -185,12 +202,29 @@ void qn_print_result(const QNBytecode *bc, const QNRunResult *result, FILE *stre
         sizeof(approved_text)
     );
     fprintf(stream,"approved_capabilities=%s\n",approved_text);
+    fprintf(stream,"approval_scheme=%s\n",
+            result->approval_scheme[0]
+                ? result->approval_scheme
+                : "none");
     if (result->has_approval_digest) {
         char approval_hex[65];
         qn_hex32(result->approval_digest, approval_hex);
         fprintf(stream,"approval_token_sha256=%s\n",approval_hex);
     } else {
         fprintf(stream,"approval_token_sha256=none\n");
+    }
+    if (result->has_approval_issuer) {
+        char issuer_hex[65];
+        qn_hex32(
+            result->approval_issuer_fingerprint,
+            issuer_hex
+        );
+        fprintf(stream,
+                "approval_issuer_fingerprint=%s\n",
+                issuer_hex);
+    } else {
+        fprintf(stream,
+                "approval_issuer_fingerprint=none\n");
     }
     for(size_t i=0;i<result->entry_count;i++) {
         print_bits(stream,result->entries[i].state,bc->total_qubits);
@@ -206,7 +240,7 @@ QNStatus qn_write_receipt(const char *path, const QNBytecode *bc,
     qn_hex32(result->qbc_digest,qbc_hex);
     qn_hex32(bc->source_digest,source_hex);
     fprintf(f,"{\n");
-    fprintf(f,"  \"marker\": \"QBIT_NOVA_NATIVE_RECEIPT_V04\",\n");
+    fprintf(f,"  \"marker\": \"QBIT_NOVA_NATIVE_RECEIPT_V05\",\n");
     fprintf(f,"  \"creator\": \"Universal Dragon Aslam\",\n");
     fprintf(f,"  \"boundary\": \"software_virtual_qcpu\",\n");
     fprintf(f,"  \"physical_qpu\": false,\n");
@@ -227,6 +261,10 @@ QNStatus qn_write_receipt(const char *path, const QNBytecode *bc,
     );
     fprintf(f,"  \"approved_capabilities\": \"%s\",\n",
             approved_text);
+    fprintf(f,"  \"approval_scheme\": \"%s\",\n",
+            result->approval_scheme[0]
+                ? result->approval_scheme
+                : "none");
     if (result->has_approval_digest) {
         char approval_hex[65];
         qn_hex32(result->approval_digest, approval_hex);
@@ -234,6 +272,19 @@ QNStatus qn_write_receipt(const char *path, const QNBytecode *bc,
                 approval_hex);
     } else {
         fprintf(f,"  \"approval_token_sha256\": null,\n");
+    }
+    if (result->has_approval_issuer) {
+        char issuer_hex[65];
+        qn_hex32(
+            result->approval_issuer_fingerprint,
+            issuer_hex
+        );
+        fprintf(f,
+                "  \"approval_issuer_fingerprint\": \"%s\",\n",
+                issuer_hex);
+    } else {
+        fprintf(f,
+                "  \"approval_issuer_fingerprint\": null,\n");
     }
     fprintf(f,"  \"qubits\": %u,\n  \"shots\": %u,\n  \"seed\": %llu,\n",
             bc->total_qubits,result->shots,(unsigned long long)result->seed);

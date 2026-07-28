@@ -4,6 +4,7 @@
 #include "qn_qir.h"
 #include "qn_vm.h"
 #include "qn_approval.h"
+#include "qn_signed_approval.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -11,12 +12,20 @@
 
 static void usage(FILE *f) {
     fprintf(f,
-        "QBIT NOVA Native v0.4.0\n"
+        "QBIT NOVA Native v0.5.0\n"
         "Usage:\n"
         "  qnova lex <file.qn>\n"
         "  qnova check <file.qn>\n"
         "  qnova qir <file.qn>\n"
         "  qnova guard <capability> [--approve <capability>]\n"
+        "  qnova approval keygen-ed25519 --private PRIVATE --public PUBLIC\n"
+        "  qnova approval derive-public-ed25519 --private PRIVATE --public PUBLIC\n"
+        "  qnova approval issue-ed25519 <file.qn> <capability>\n"
+        "            --private-key PRIVATE --expires-at UNIX\n"
+        "            [-o token.qns] [--issued-at UNIX]\n"
+        "            [--nonce-hex 32HEX] [--context TEXT]\n"
+        "  qnova approval verify-ed25519 <file.qn> <token.qns>\n"
+        "            --public-key PUBLIC [--now UNIX]\n"
         "  qnova approval issue <file.qn> <capability> --key-file KEY\n"
         "            --expires-at UNIX [-o token.qna] [--issued-at UNIX]\n"
         "            [--nonce TEXT]\n"
@@ -24,11 +33,11 @@ static void usage(FILE *f) {
         "            [--now UNIX]\n"
         "  qnova build <file.qn> -o <file.qbc>\n"
         "  qnova run <file.qn> [--shots N] [--seed N] [--policy safe|deny-all]\n"
+        "            [--signed-approval-file token.qns]\n"
+        "            [--approval-public-key-file PUBLIC]\n"
         "            [--approval-file token.qna --approval-key-file KEY]\n"
         "            [--now UNIX] [--receipt file.json]\n"
-        "  qnova exec <file.qbc> [--shots N] [--seed N] [--policy safe|deny-all]\n"
-        "            [--approval-file token.qna --approval-key-file KEY]\n"
-        "            [--now UNIX] [--receipt file.json]\n"
+        "  qnova exec <file.qbc> [same execution options]\n"
         "  qnova version\n");
 }
 
@@ -101,6 +110,8 @@ typedef struct {
     const char *receipt;
     const char *approval_file;
     const char *approval_key_file;
+    const char *signed_approval_file;
+    const char *approval_public_key_file;
     uint64_t approval_now;
     bool has_approval_now;
     QNGuardPolicy policy;
@@ -129,6 +140,10 @@ static void parse_run_opts(int argc,
             options->approval_file=argv[++i];
         } else if(!strcmp(argv[i],"--approval-key-file") && i+1<argc) {
             options->approval_key_file=argv[++i];
+        } else if(!strcmp(argv[i],"--signed-approval-file") && i+1<argc) {
+            options->signed_approval_file=argv[++i];
+        } else if(!strcmp(argv[i],"--approval-public-key-file") && i+1<argc) {
+            options->approval_public_key_file=argv[++i];
         } else if(!strcmp(argv[i],"--now") && i+1<argc) {
             options->approval_now=parse_u64(argv[++i],"now");
             options->has_approval_now=true;
@@ -155,10 +170,12 @@ static QNStatus apply_approval_to_policy(
     QNGuardPolicy *policy,
     QNDiagnostic *diag
 ) {
-    bool has_file = options->approval_file != NULL;
-    bool has_key = options->approval_key_file != NULL;
+    bool has_hmac_file = options->approval_file != NULL;
+    bool has_hmac_key = options->approval_key_file != NULL;
+    bool has_signed_file = options->signed_approval_file != NULL;
+    bool has_public_key = options->approval_public_key_file != NULL;
 
-    if (has_file != has_key) {
+    if (has_hmac_file != has_hmac_key) {
         qn_diag_set_code(
             diag,
             "QN-E-APPROVAL-011",
@@ -169,7 +186,84 @@ static QNStatus apply_approval_to_policy(
         return QN_ERR_RUNTIME;
     }
 
-    if (!has_file) return QN_OK;
+    if (has_signed_file != has_public_key) {
+        qn_diag_set_code(
+            diag,
+            "QN-E5004",
+            0,
+            0,
+            "--signed-approval-file and --approval-public-key-file must be used together"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    if (has_hmac_file && has_signed_file) {
+        qn_diag_set_code(
+            diag,
+            "QN-E5004",
+            0,
+            0,
+            "choose either HMAC approval or Ed25519 approval, not both"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    uint64_t now = options->has_approval_now
+        ? options->approval_now
+        : current_unix_time();
+
+    if (has_signed_file) {
+        QNSignedApprovalToken token;
+        QNStatus status = qn_signed_approval_read(
+            options->signed_approval_file,
+            &token,
+            diag
+        );
+        if (status != QN_OK) return status;
+
+        uint8_t *public_key = qn_signed_approval_load_key(
+            options->approval_public_key_file,
+            QN_ED25519_PUBLIC_KEY_BYTES,
+            diag
+        );
+        if (!public_key) return QN_ERR_RUNTIME;
+
+        QNCapabilityMask approved = 0u;
+        status = qn_signed_approval_verify(
+            &token,
+            bc->source_digest,
+            bc->capability_mask,
+            now,
+            public_key,
+            &approved,
+            diag
+        );
+        free(public_key);
+
+        if (status != QN_OK) return status;
+
+        policy->approved |= approved;
+        policy->has_approval_digest = true;
+        memcpy(
+            policy->approval_digest,
+            token.token_digest,
+            sizeof(policy->approval_digest)
+        );
+        snprintf(
+            policy->approval_scheme,
+            sizeof(policy->approval_scheme),
+            "ed25519"
+        );
+        policy->has_approval_issuer = true;
+        memcpy(
+            policy->approval_issuer_fingerprint,
+            token.issuer_fingerprint,
+            sizeof(policy->approval_issuer_fingerprint)
+        );
+        return QN_OK;
+    }
+
+    if (!has_hmac_file) return QN_OK;
 
     QNApprovalToken token;
     QNStatus status =
@@ -183,10 +277,6 @@ static QNStatus apply_approval_to_policy(
         diag
     );
     if (!key) return QN_ERR_RUNTIME;
-
-    uint64_t now = options->has_approval_now
-        ? options->approval_now
-        : current_unix_time();
 
     QNCapabilityMask approved = 0;
     status = qn_approval_verify(
@@ -208,6 +298,11 @@ static QNStatus apply_approval_to_policy(
         policy->approval_digest,
         token.token_digest,
         sizeof(policy->approval_digest)
+    );
+    snprintf(
+        policy->approval_scheme,
+        sizeof(policy->approval_scheme),
+        "hmac-sha256"
     );
     return QN_OK;
 }
@@ -242,9 +337,313 @@ int main(int argc,char **argv) {
 
 
     if(!strcmp(argv[1],"approval")) {
-        if(argc < 5) {
+        if(argc < 3) {
             usage(stderr);
             return QN_ERR_PARSE;
+        }
+
+
+        if(!strcmp(argv[2],"keygen-ed25519")) {
+            const char *private_path = NULL;
+            const char *public_path = NULL;
+
+            for(int i=3;i<argc;i++) {
+                if(!strcmp(argv[i],"--private") && i+1<argc) {
+                    private_path=argv[++i];
+                } else if(!strcmp(argv[i],"--public") && i+1<argc) {
+                    public_path=argv[++i];
+                } else {
+                    fprintf(stderr,
+                            "error[QN-E5004]: unknown keygen option '%s'\n",
+                            argv[i]);
+                    return QN_ERR_PARSE;
+                }
+            }
+
+            if(!private_path || !public_path) {
+                fprintf(stderr,
+                        "error[QN-E5004]: keygen requires --private and --public\n");
+                return QN_ERR_PARSE;
+            }
+
+            QNStatus status =
+                qn_signed_approval_keypair_generate(
+                    private_path,
+                    public_path,
+                    &diag
+                );
+            if(status!=QN_OK) return print_diag(status,&diag);
+
+            uint8_t *public_key = qn_signed_approval_load_key(
+                public_path,
+                QN_ED25519_PUBLIC_KEY_BYTES,
+                &diag
+            );
+            if(!public_key) return print_diag(QN_ERR_IO,&diag);
+
+            uint8_t fingerprint[32];
+            char fingerprint_hex[65];
+            qn_ed25519_fingerprint(public_key,fingerprint);
+            qn_hex32(fingerprint,fingerprint_hex);
+            free(public_key);
+
+            printf("QBIT_NOVA_ED25519_KEYGEN_V05\n");
+            printf("private=%s\n",private_path);
+            printf("public=%s\n",public_path);
+            printf("issuer_fingerprint=%s\n",fingerprint_hex);
+            printf("private_key_format=raw-32-byte-seed\n");
+            printf("public_key_format=raw-32-byte\n");
+            return 0;
+        }
+
+        if(!strcmp(argv[2],"derive-public-ed25519")) {
+            const char *private_path = NULL;
+            const char *public_path = NULL;
+
+            for(int i=3;i<argc;i++) {
+                if(!strcmp(argv[i],"--private") && i+1<argc) {
+                    private_path=argv[++i];
+                } else if(!strcmp(argv[i],"--public") && i+1<argc) {
+                    public_path=argv[++i];
+                } else {
+                    fprintf(stderr,
+                            "error[QN-E5004]: unknown derive option '%s'\n",
+                            argv[i]);
+                    return QN_ERR_PARSE;
+                }
+            }
+
+            if(!private_path || !public_path) {
+                fprintf(stderr,
+                        "error[QN-E5004]: derive-public requires --private and --public\n");
+                return QN_ERR_PARSE;
+            }
+
+            QNStatus status =
+                qn_signed_approval_derive_public(
+                    private_path,
+                    public_path,
+                    &diag
+                );
+            if(status!=QN_OK) return print_diag(status,&diag);
+
+            printf("QBIT_NOVA_ED25519_PUBLIC_DERIVE_V05\n");
+            printf("public=%s\n",public_path);
+            return 0;
+        }
+
+        if(!strcmp(argv[2],"issue-ed25519")) {
+            if(argc < 5) {
+                usage(stderr);
+                return QN_ERR_PARSE;
+            }
+
+            const char *source_path = argv[3];
+            const char *capability_name = argv[4];
+            const char *private_path = NULL;
+            const char *output_path = "approval.qns";
+            const char *nonce_hex = NULL;
+            const char *context_text = "";
+            uint64_t issued_at = current_unix_time();
+            uint64_t expires_at = 0u;
+
+            for(int i=5;i<argc;i++) {
+                if(!strcmp(argv[i],"--private-key") && i+1<argc) {
+                    private_path=argv[++i];
+                } else if(!strcmp(argv[i],"-o") && i+1<argc) {
+                    output_path=argv[++i];
+                } else if(!strcmp(argv[i],"--issued-at") && i+1<argc) {
+                    issued_at=parse_u64(argv[++i],"issued-at");
+                } else if(!strcmp(argv[i],"--expires-at") && i+1<argc) {
+                    expires_at=parse_u64(argv[++i],"expires-at");
+                } else if(!strcmp(argv[i],"--nonce-hex") && i+1<argc) {
+                    nonce_hex=argv[++i];
+                } else if(!strcmp(argv[i],"--context") && i+1<argc) {
+                    context_text=argv[++i];
+                } else {
+                    fprintf(stderr,
+                            "error[QN-E5004]: unknown issue-ed25519 option '%s'\n",
+                            argv[i]);
+                    return QN_ERR_PARSE;
+                }
+            }
+
+            if(!private_path || expires_at==0u) {
+                fprintf(stderr,
+                        "error[QN-E5004]: issue-ed25519 requires --private-key and --expires-at\n");
+                return QN_ERR_PARSE;
+            }
+
+            QNCapabilityMask capability = 0u;
+            if(!qn_capability_parse(capability_name,&capability)) {
+                fprintf(stderr,
+                        "error[QN-E5009]: unknown capability '%s'\n",
+                        capability_name);
+                return QN_ERR_PARSE;
+            }
+
+            QNBytecode bc={0};
+            QNStatus status =
+                compile_source(source_path,&bc,NULL,NULL,&diag);
+            if(status!=QN_OK) return print_diag(status,&diag);
+
+            uint8_t *private_key = qn_signed_approval_load_key(
+                private_path,
+                QN_ED25519_PRIVATE_KEY_BYTES,
+                &diag
+            );
+            if(!private_key) {
+                qn_bytecode_free(&bc);
+                return print_diag(QN_ERR_IO,&diag);
+            }
+
+            uint8_t nonce[QN_SIGNED_APPROVAL_NONCE_BYTES];
+            const uint8_t *nonce_pointer = NULL;
+            if(nonce_hex) {
+                if(!qn_signed_approval_parse_nonce_hex(
+                        nonce_hex,
+                        nonce)) {
+                    qn_ed25519_wipe_private(private_key);
+                    free(private_key);
+                    qn_bytecode_free(&bc);
+                    fprintf(stderr,
+                            "error[QN-E5004]: nonce must be exactly 32 hex characters\n");
+                    return QN_ERR_PARSE;
+                }
+                nonce_pointer=nonce;
+            }
+
+            QNSignedApprovalToken token;
+            status=qn_signed_approval_issue(
+                capability,
+                bc.capability_mask,
+                bc.source_digest,
+                issued_at,
+                expires_at,
+                nonce_pointer,
+                (const uint8_t *)context_text,
+                strlen(context_text),
+                private_key,
+                &token,
+                &diag
+            );
+
+            qn_ed25519_wipe_private(private_key);
+            free(private_key);
+
+            if(status==QN_OK) {
+                status=qn_signed_approval_write(
+                    output_path,
+                    &token,
+                    &diag
+                );
+            }
+
+            if(status==QN_OK) {
+                char source_hex[65];
+                char issuer_hex[65];
+                qn_hex32(bc.source_digest,source_hex);
+                qn_hex32(token.issuer_fingerprint,issuer_hex);
+                printf("QBIT_NOVA_ED25519_APPROVAL_ISSUE_V05\n");
+                printf("output=%s\n",output_path);
+                printf("capability=%s\n",
+                       qn_capability_name(token.capability));
+                printf("capability_id=0x%08x\n",
+                       token.capability_id);
+                printf("source_sha256=%s\n",source_hex);
+                printf("issuer_fingerprint=%s\n",issuer_hex);
+                printf("issued_at=%llu\n",
+                       (unsigned long long)token.issued_at);
+                printf("expires_at=%llu\n",
+                       (unsigned long long)token.expires_at);
+                printf("authentication=ed25519\n");
+            }
+
+            qn_bytecode_free(&bc);
+            return status==QN_OK ? 0 : print_diag(status,&diag);
+        }
+
+        if(!strcmp(argv[2],"verify-ed25519")) {
+            if(argc < 5) {
+                usage(stderr);
+                return QN_ERR_PARSE;
+            }
+
+            const char *source_path = argv[3];
+            const char *token_path = argv[4];
+            const char *public_path = NULL;
+            uint64_t now = current_unix_time();
+
+            for(int i=5;i<argc;i++) {
+                if(!strcmp(argv[i],"--public-key") && i+1<argc) {
+                    public_path=argv[++i];
+                } else if(!strcmp(argv[i],"--now") && i+1<argc) {
+                    now=parse_u64(argv[++i],"now");
+                } else {
+                    fprintf(stderr,
+                            "error[QN-E5004]: unknown verify-ed25519 option '%s'\n",
+                            argv[i]);
+                    return QN_ERR_PARSE;
+                }
+            }
+
+            if(!public_path) {
+                fprintf(stderr,
+                        "error[QN-E5004]: verify-ed25519 requires --public-key\n");
+                return QN_ERR_PARSE;
+            }
+
+            QNBytecode bc={0};
+            QNStatus status =
+                compile_source(source_path,&bc,NULL,NULL,&diag);
+            if(status!=QN_OK) return print_diag(status,&diag);
+
+            QNSignedApprovalToken token;
+            status=qn_signed_approval_read(
+                token_path,
+                &token,
+                &diag
+            );
+
+            uint8_t *public_key = NULL;
+            if(status==QN_OK) {
+                public_key=qn_signed_approval_load_key(
+                    public_path,
+                    QN_ED25519_PUBLIC_KEY_BYTES,
+                    &diag
+                );
+                if(!public_key) status=QN_ERR_IO;
+            }
+
+            QNCapabilityMask approved = 0u;
+            if(status==QN_OK) {
+                status=qn_signed_approval_verify(
+                    &token,
+                    bc.source_digest,
+                    bc.capability_mask,
+                    now,
+                    public_key,
+                    &approved,
+                    &diag
+                );
+            }
+            free(public_key);
+
+            if(status==QN_OK) {
+                char token_hex[65];
+                char issuer_hex[65];
+                qn_hex32(token.token_digest,token_hex);
+                qn_hex32(token.issuer_fingerprint,issuer_hex);
+                printf("QBIT_NOVA_ED25519_APPROVAL_VERIFY_V05\n");
+                printf("status=valid\n");
+                printf("capability=%s\n",
+                       qn_capability_name(approved));
+                printf("issuer_fingerprint=%s\n",issuer_hex);
+                printf("token_sha256=%s\n",token_hex);
+            }
+
+            qn_bytecode_free(&bc);
+            return status==QN_OK ? 0 : print_diag(status,&diag);
         }
 
         if(!strcmp(argv[2],"issue")) {

@@ -7,7 +7,7 @@
 #include <stdio.h>
 
 #define QN_VERSION_MAJOR 0
-#define QN_VERSION_MINOR 4
+#define QN_VERSION_MINOR 5
 #define QN_VERSION_PATCH 0
 
 #define QN_MAX_SOURCE_BYTES (1024u * 1024u)

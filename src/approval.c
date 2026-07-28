@@ -188,7 +188,8 @@ static bool capability_can_be_approved(
 ) {
     return capability != 0u &&
            (capability & (capability - 1u)) == 0u &&
-           (capability & QN_CAP_APPROVAL_DEFAULT) != 0u;
+           (capability & QN_CAP_APPROVAL_DEFAULT) != 0u &&
+           (capability & QN_CAP_BLOCKED_DEFAULT) == 0u;
 }
 
 static void derive_nonce(QNCapabilityMask capability,

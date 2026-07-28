@@ -5,156 +5,285 @@ BIN="./build/qnova"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-printf '0123456789abcdef0123456789abcdef' > "$TMP/key.bin"
-printf 'fedcba9876543210fedcba9876543210' > "$TMP/wrong-key.bin"
+printf '0123456789abcdef0123456789abcdef' > "$TMP/hmac.key"
+printf '0123456789abcdef0123456789abcdef' > "$TMP/ed-private-a.key"
+printf 'fedcba9876543210fedcba9876543210' > "$TMP/ed-private-b.key"
+
+"$BIN" approval derive-public-ed25519 \
+  --private "$TMP/ed-private-a.key" \
+  --public "$TMP/ed-public-a.key" >/dev/null
+
+"$BIN" approval derive-public-ed25519 \
+  --private "$TMP/ed-private-b.key" \
+  --public "$TMP/ed-public-b.key" >/dev/null
 
 echo "=== VERSION ==="
 "$BIN" version > "$TMP/version.out"
-grep -q 'QBIT NOVA Native 0.4.0' "$TMP/version.out"
+grep -q 'QBIT NOVA Native 0.5.0' "$TMP/version.out"
 grep -q 'python_dependency=false' "$TMP/version.out"
 
-echo "=== REQUIRES DECLARATION ==="
-"$BIN" qir examples/approval_model.qn > "$TMP/approval.qir"
-grep -q '^capabilities=quantum.simulate,evidence.emit,model.exec$' \
-  "$TMP/approval.qir"
+echo "=== OPENSSL ED25519 CSPRNG KEYGEN ==="
+"$BIN" approval keygen-ed25519 \
+  --private "$TMP/random-a.key" \
+  --public "$TMP/random-a.pub" > "$TMP/random-a.out"
+"$BIN" approval keygen-ed25519 \
+  --private "$TMP/random-b.key" \
+  --public "$TMP/random-b.pub" > "$TMP/random-b.out"
+if cmp -s "$TMP/random-a.key" "$TMP/random-b.key"; then
+  echo "FAIL: generated private keys are identical"
+  exit 1
+fi
+test "$(stat -c '%a' "$TMP/random-a.key")" = "600"
 
-echo "=== APPROVAL REQUIRED WITHOUT TOKEN ==="
-set +e
-"$BIN" run examples/approval_model.qn \
-  >"$TMP/no-token.out" 2>"$TMP/no-token.err"
-STATUS=$?
-set -e
-test "$STATUS" -eq 7
-grep -q 'QN-E-APPROVAL-001' "$TMP/no-token.err"
-
-echo "=== ISSUE AUTHENTICATED APPROVAL ==="
+echo "=== HMAC V0.4 COMPATIBILITY ==="
 "$BIN" approval issue \
   examples/approval_model.qn \
   model.exec \
-  --key-file "$TMP/key.bin" \
+  --key-file "$TMP/hmac.key" \
   --issued-at 2000000000 \
   --expires-at 2000003600 \
-  --nonce stage4proof \
-  -o "$TMP/model.qna" \
-  > "$TMP/issue.out"
-grep -q '^authentication=hmac-sha256$' "$TMP/issue.out"
+  --nonce compatibility \
+  -o "$TMP/model.qna" >/dev/null
+"$BIN" run examples/approval_model.qn \
+  --approval-file "$TMP/model.qna" \
+  --approval-key-file "$TMP/hmac.key" \
+  --now 2000000100 \
+  > "$TMP/hmac-run.out"
+grep -q '^approval_scheme=hmac-sha256$' "$TMP/hmac-run.out"
 
-echo "=== VERIFY AUTHENTICATED APPROVAL ==="
-"$BIN" approval verify \
+echo "=== HMAC BLOCKED CAPABILITY REJECTION ==="
+set +e
+"$BIN" approval issue \
+  examples/blocked_shell.qn \
+  shell.exec \
+  --key-file "$TMP/hmac.key" \
+  --issued-at 2000000000 \
+  --expires-at 2000003600 \
+  --nonce blocked-hmac \
+  -o "$TMP/shell.qna" \
+  >"$TMP/hmac-shell.out" 2>"$TMP/hmac-shell.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E-APPROVAL-006' "$TMP/hmac-shell.err"
+
+echo "=== ISSUE ED25519 APPROVAL ==="
+"$BIN" approval issue-ed25519 \
   examples/approval_model.qn \
-  "$TMP/model.qna" \
-  --key-file "$TMP/key.bin" \
+  model.exec \
+  --private-key "$TMP/ed-private-a.key" \
+  --issued-at 2000000000 \
+  --expires-at 2000003600 \
+  --nonce-hex 00112233445566778899aabbccddeeff \
+  --context stage5-proof \
+  -o "$TMP/model.qns" \
+  > "$TMP/issue.out"
+grep -q '^authentication=ed25519$' "$TMP/issue.out"
+grep -q '^capability_id=0x00000100$' "$TMP/issue.out"
+
+echo "=== VERIFY ED25519 APPROVAL ==="
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --public-key "$TMP/ed-public-a.key" \
   --now 2000000100 \
   > "$TMP/verify.out"
 grep -q '^status=valid$' "$TMP/verify.out"
 grep -q '^capability=model.exec$' "$TMP/verify.out"
 
-echo "=== GUARDED EXECUTION WITH TOKEN ==="
+echo "=== GUARDED EXECUTION WITH ED25519 ==="
 "$BIN" run examples/approval_model.qn \
-  --approval-file "$TMP/model.qna" \
-  --approval-key-file "$TMP/key.bin" \
+  --signed-approval-file "$TMP/model.qns" \
+  --approval-public-key-file "$TMP/ed-public-a.key" \
   --now 2000000100 \
-  --receipt "$TMP/model-receipt.json" \
-  > "$TMP/run.out"
-grep -q '^guard=allowed$' "$TMP/run.out"
-grep -q '^approved_capabilities=model.exec$' "$TMP/run.out"
-grep -Eq '^approval_token_sha256=[0-9a-f]{64}$' "$TMP/run.out"
-grep -q '"approved_capabilities": "model.exec"' \
-  "$TMP/model-receipt.json"
+  --receipt "$TMP/receipt-a.json" \
+  > "$TMP/signed-run.out"
+grep -q '^QBIT_NOVA_NATIVE_RUN_V05$' "$TMP/signed-run.out"
+grep -q '^approval_scheme=ed25519$' "$TMP/signed-run.out"
+grep -q '^approved_capabilities=model.exec$' "$TMP/signed-run.out"
+grep -Eq '^approval_issuer_fingerprint=[0-9a-f]{64}$' \
+  "$TMP/signed-run.out"
+grep -q '"approval_scheme": "ed25519"' "$TMP/receipt-a.json"
 
-echo "=== WRONG KEY REJECTION ==="
+echo "=== DETERMINISTIC RECEIPT ==="
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --approval-public-key-file "$TMP/ed-public-a.key" \
+  --now 2000000100 \
+  --receipt "$TMP/receipt-b.json" >/dev/null
+cmp "$TMP/receipt-a.json" "$TMP/receipt-b.json"
+
+echo "=== WRONG PUBLIC KEY REJECTION ==="
 set +e
-"$BIN" approval verify \
+"$BIN" approval verify-ed25519 \
   examples/approval_model.qn \
-  "$TMP/model.qna" \
-  --key-file "$TMP/wrong-key.bin" \
+  "$TMP/model.qns" \
+  --public-key "$TMP/ed-public-b.key" \
   --now 2000000100 \
   >"$TMP/wrong-key.out" 2>"$TMP/wrong-key.err"
 STATUS=$?
 set -e
 test "$STATUS" -eq 7
-grep -q 'QN-E-APPROVAL-004' "$TMP/wrong-key.err"
+grep -q 'QN-E5003' "$TMP/wrong-key.err"
 
-echo "=== TAMPER DETECTION ==="
-cp "$TMP/model.qna" "$TMP/tampered.qna"
-sed -i 's/nonce=stage4proof/nonce=stage4tamper/' \
-  "$TMP/tampered.qna"
+echo "=== TAMPERED PAYLOAD REJECTION ==="
+cp "$TMP/model.qns" "$TMP/tampered.qns"
+printf '\x58' | dd of="$TMP/tampered.qns" \
+  bs=1 seek=139 count=1 conv=notrunc status=none
 set +e
-"$BIN" approval verify \
+"$BIN" approval verify-ed25519 \
   examples/approval_model.qn \
-  "$TMP/tampered.qna" \
-  --key-file "$TMP/key.bin" \
+  "$TMP/tampered.qns" \
+  --public-key "$TMP/ed-public-a.key" \
   --now 2000000100 \
   >"$TMP/tamper.out" 2>"$TMP/tamper.err"
 STATUS=$?
 set -e
 test "$STATUS" -eq 7
-grep -q 'QN-E-APPROVAL-004' "$TMP/tamper.err"
+grep -q 'QN-E5002' "$TMP/tamper.err"
 
-echo "=== SOURCE SCOPE REJECTION ==="
+echo "=== TRAILING BYTE REJECTION ==="
+cp "$TMP/model.qns" "$TMP/trailing.qns"
+printf 'x' >> "$TMP/trailing.qns"
 set +e
-"$BIN" approval verify \
-  examples/ghz3.qn \
-  "$TMP/model.qna" \
-  --key-file "$TMP/key.bin" \
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/trailing.qns" \
+  --public-key "$TMP/ed-public-a.key" \
   --now 2000000100 \
-  >"$TMP/scope.out" 2>"$TMP/scope.err"
+  >"$TMP/trailing.out" 2>"$TMP/trailing.err"
 STATUS=$?
 set -e
 test "$STATUS" -eq 7
-grep -q 'QN-E-APPROVAL-003' "$TMP/scope.err"
+grep -q 'QN-E5004' "$TMP/trailing.err"
 
-echo "=== EXPIRY REJECTION ==="
+echo "=== TRUNCATED SIGNATURE REJECTION ==="
+cp "$TMP/model.qns" "$TMP/truncated.qns"
+truncate -s -1 "$TMP/truncated.qns"
 set +e
-"$BIN" approval verify \
+"$BIN" approval verify-ed25519 \
   examples/approval_model.qn \
-  "$TMP/model.qna" \
-  --key-file "$TMP/key.bin" \
+  "$TMP/truncated.qns" \
+  --public-key "$TMP/ed-public-a.key" \
+  --now 2000000100 \
+  >"$TMP/truncated.out" 2>"$TMP/truncated.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5004' "$TMP/truncated.err"
+
+echo "=== MALFORMED CAPABILITY ID REJECTION ==="
+cp "$TMP/model.qns" "$TMP/bad-capability.qns"
+printf '\xde\xad\xbe\xef' | dd of="$TMP/bad-capability.qns" \
+  bs=1 seek=69 count=4 conv=notrunc status=none
+set +e
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/bad-capability.qns" \
+  --public-key "$TMP/ed-public-a.key" \
+  --now 2000000100 \
+  >"$TMP/bad-capability.out" 2>"$TMP/bad-capability.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5009' "$TMP/bad-capability.err"
+
+echo "=== WRONG SOURCE REJECTION ==="
+set +e
+"$BIN" approval verify-ed25519 \
+  examples/ghz3.qn \
+  "$TMP/model.qns" \
+  --public-key "$TMP/ed-public-a.key" \
+  --now 2000000100 \
+  >"$TMP/source.out" 2>"$TMP/source.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5008' "$TMP/source.err"
+
+echo "=== EXPIRED TOKEN REJECTION ==="
+set +e
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --public-key "$TMP/ed-public-a.key" \
   --now 2000003601 \
   >"$TMP/expired.out" 2>"$TMP/expired.err"
 STATUS=$?
 set -e
 test "$STATUS" -eq 7
-grep -q 'QN-E-APPROVAL-005' "$TMP/expired.err"
+grep -q 'QN-E5006' "$TMP/expired.err"
 
-echo "=== BLOCKED CAPABILITY CANNOT BE APPROVED ==="
+echo "=== FUTURE TOKEN REJECTION ==="
 set +e
-"$BIN" approval issue \
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --public-key "$TMP/ed-public-a.key" \
+  --now 1999999999 \
+  >"$TMP/future.out" 2>"$TMP/future.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5007' "$TMP/future.err"
+
+echo "=== EQUAL TIMESTAMP REJECTION ==="
+set +e
+"$BIN" approval issue-ed25519 \
+  examples/approval_model.qn \
+  model.exec \
+  --private-key "$TMP/ed-private-a.key" \
+  --issued-at 2000000000 \
+  --expires-at 2000000000 \
+  -o "$TMP/equal.qns" \
+  >"$TMP/equal.out" 2>"$TMP/equal.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5004' "$TMP/equal.err"
+
+echo "=== UINT64 TIMESTAMP BOUNDARY REJECTION ==="
+set +e
+"$BIN" approval issue-ed25519 \
+  examples/approval_model.qn \
+  model.exec \
+  --private-key "$TMP/ed-private-a.key" \
+  --issued-at 18446744073709551614 \
+  --expires-at 18446744073709551615 \
+  -o "$TMP/overflow.qns" \
+  >"$TMP/overflow.out" 2>"$TMP/overflow.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E5004' "$TMP/overflow.err"
+
+echo "=== BLOCKED CAPABILITY CANNOT BE SIGNED ==="
+set +e
+"$BIN" approval issue-ed25519 \
   examples/blocked_shell.qn \
   shell.exec \
-  --key-file "$TMP/key.bin" \
+  --private-key "$TMP/ed-private-a.key" \
   --issued-at 2000000000 \
   --expires-at 2000003600 \
-  -o "$TMP/shell.qna" \
+  -o "$TMP/shell.qns" \
   >"$TMP/shell.out" 2>"$TMP/shell.err"
 STATUS=$?
 set -e
 test "$STATUS" -eq 7
-grep -q 'QN-E-APPROVAL-006' "$TMP/shell.err"
+grep -q 'QN-E5010' "$TMP/shell.err"
 
-echo "=== SAFE PROGRAM STILL RUNS WITHOUT TOKEN ==="
+echo "=== SAFE PROGRAM WITHOUT APPROVAL ==="
 "$BIN" run examples/ghz3.qn > "$TMP/ghz.out"
-grep -q '^QBIT_NOVA_NATIVE_RUN_V04$' "$TMP/ghz.out"
-grep -q '^guard=allowed$' "$TMP/ghz.out"
-grep -q '^approved_capabilities=none$' "$TMP/ghz.out"
-
-echo "=== DETERMINISTIC QBC ==="
-"$BIN" build examples/approval_model.qn \
-  -o "$TMP/a.qbc" >/dev/null
-"$BIN" build examples/approval_model.qn \
-  -o "$TMP/b.qbc" >/dev/null
-cmp "$TMP/a.qbc" "$TMP/b.qbc"
-
-echo "=== BELL / GHZ CORRELATION ==="
-"$BIN" run examples/bell.qn > "$TMP/bell.out"
-if grep -Eq '^\|01>=|^\|10>=' "$TMP/bell.out"; then
-  echo "FAIL: invalid Bell state"
-  exit 1
-fi
+grep -q '^approval_scheme=none$' "$TMP/ghz.out"
 if grep -Eq '^\|001>=|^\|010>=|^\|011>=|^\|100>=|^\|101>=|^\|110>=' \
   "$TMP/ghz.out"; then
   echo "FAIL: invalid GHZ state"
   exit 1
 fi
 
-echo "PASS: QBIT_NOVA_AUTHENTICATED_APPROVAL_TEST_SUITE_V04"
+echo "=== DETERMINISTIC QBC ==="
+"$BIN" build examples/approval_model.qn -o "$TMP/a.qbc" >/dev/null
+"$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
+cmp "$TMP/a.qbc" "$TMP/b.qbc"
+
+echo "PASS: QBIT_NOVA_OPENSSL_ED25519_APPROVAL_TEST_SUITE_V05"

@@ -1,122 +1,59 @@
 {
   "project": "QBIT NOVA Native",
-  "version": "0.4.0",
   "creator": "Universal Dragon Aslam",
-  "stage": "authenticated_approvals",
+  "release": "v0.5-stage5.1",
+  "stage": "openssl_ed25519_authenticated_approvals",
   "boundary": "software_virtual_qcpu",
-  "approval_authentication": "HMAC-SHA-256",
-  "public_key_signature": false,
+  "runtime_language": "C17",
   "python_runtime_dependency": false,
-  "qbit_nova_c_touched": false,
+  "public_release": false,
+  "approval_authentication": [
+    "HMAC-SHA-256 v0.4 compatibility",
+    "OpenSSL EVP Ed25519"
+  ],
   "security": {
+    "deny_by_default": true,
     "source_scope_binding": true,
     "expiry_validation": true,
     "tamper_detection": true,
-    "constant_time_mac_comparison": true,
     "blocked_capability_override": false,
-    "revocation_ledger": false,
-    "replay_ledger": false
+    "shell_exec_blocked": true,
+    "replay_ledger": false,
+    "revocation_store": false,
+    "multi_issuer_trust_store": false
   },
+  "verification": {
+    "architecture": "aarch64",
+    "platform": "Raspberry Pi 5",
+    "openssl_version": "3.5.6",
+    "test_suite": "QBIT_NOVA_OPENSSL_ED25519_APPROVAL_TEST_SUITE_V05",
+    "result": "PASS",
+    "stage5_1_patch_sha256": "d24ef95798d0dcac2685893951da343bdb9dfa40fdb61463f02c1a36b45cbdcf",
+    "frozen_archive_sha256": "cccce237631bed1ce579300ee611fe4986a58dbdbf018e3d93be8edab7bddbf7"
+  },
+  "manifest_self_hash": false,
+  "source_tree_sha256": "17355b0cb8b66ddc5fb53172e1dd606f6f15637a1c1ba74300a0171fe5e0efe9",
+  "file_count": 40,
   "files": [
     {
+      "path": ".github/workflows/ci.yml",
+      "bytes": 874,
+      "sha256": "4ccb92124eaeabf3e9a84ad3fd135a5267243a7272a6ba8a5bb09f0f6bb70993"
+    },
+    {
+      "path": ".gitignore",
+      "bytes": 178,
+      "sha256": "9cbc8b8067041062f71aa7e1441976db74355b013950beb3ebf12c41a7c80c74"
+    },
+    {
       "path": "Makefile",
-      "bytes": 603,
-      "sha256": "3cb25a48ba4b7363c6ca9389af0fa7807551781a5b55c3849b7bd4926af6c8a5"
+      "bytes": 1046,
+      "sha256": "7d6edd334c9cbec717d82e333108727e286ad61429a5860a5be72ec8e91173a7"
     },
     {
       "path": "README.md",
-      "bytes": 2369,
-      "sha256": "630b0eb71f4fd290a91d6ed8b7490c5c28cd46ff908c2345b7c736e1f6355813"
-    },
-    {
-      "path": "build/DEMO_KEY_NOT_FOR_PRODUCTION.txt",
-      "bytes": 87,
-      "sha256": "bb49675ac9ecbc35d1cba09398e09e87ce299b8a2363864ffe7cdef2f9216f58"
-    },
-    {
-      "path": "build/approval-issue-v04.txt",
-      "bytes": 236,
-      "sha256": "ae7c5489aeb05c0f7ce0ed771922133c837cecfe059ae0880e3cce702f5faa3a"
-    },
-    {
-      "path": "build/approval-verify-v04.txt",
-      "bytes": 143,
-      "sha256": "236b138a4e0261a01de91d9207ac2ed796d032025c517c0015cc15a247081ee9"
-    },
-    {
-      "path": "build/approval.o",
-      "bytes": 12072,
-      "sha256": "d7a452ddf42de6acc5b4f5de7c151d534bfec39c1f8d31d6185bd45487b906de"
-    },
-    {
-      "path": "build/demo-test-key.bin",
-      "bytes": 32,
-      "sha256": "3eb1bd439947eb762998e566ccc2e099c791118b2f40579cc4f7da2b5061b7f9"
-    },
-    {
-      "path": "build/guard.o",
-      "bytes": 7416,
-      "sha256": "85f4140766c43bbda7687e4de3863d47a01851fd5498d08469a5548eb5d3ad81"
-    },
-    {
-      "path": "build/lexer.o",
-      "bytes": 9696,
-      "sha256": "c2f4267741d7fdedc1cac2a6db76f1048247a679b6041ebdcd9f16ef631fe16a"
-    },
-    {
-      "path": "build/main.o",
-      "bytes": 20880,
-      "sha256": "03a85e5c8be2b4a14bae670ce8ab0e40247390475d2d4ce4b9ac62690bb471fc"
-    },
-    {
-      "path": "build/model-approval-v04.qna",
-      "bytes": 271,
-      "sha256": "0b4b687f8f9e41c5c6d24207eb359494c45612e24e049fa4ae93f207cb6b6c80"
-    },
-    {
-      "path": "build/model-receipt-v04.json",
-      "bytes": 620,
-      "sha256": "fce2d5568c6e86dc588e453e1ead6fde39a9ae3954cdf5752a75db3787e2e0f7"
-    },
-    {
-      "path": "build/model-run-v04.txt",
-      "bytes": 495,
-      "sha256": "fcf47b459d481423db9a3cadb72bca7675992db38387d6178ad31d69f03001f7"
-    },
-    {
-      "path": "build/parser.o",
-      "bytes": 8680,
-      "sha256": "e28232376ccf17636be364df44f2625a4d6dfcd6fd8c959ca7c80b2ebddc5d71"
-    },
-    {
-      "path": "build/qbc.o",
-      "bytes": 5224,
-      "sha256": "81e9cc7f364ab6b596bbe949a020f4dbdb4b505fe5f3034c81a253ef24865347"
-    },
-    {
-      "path": "build/qir.o",
-      "bytes": 16784,
-      "sha256": "437f9b42ee535515308d2bf666a8027ad5f348b023461268c56896e77b5c7744"
-    },
-    {
-      "path": "build/qnova",
-      "bytes": 65536,
-      "sha256": "d28cb2a00d7f20cee420894f7f7704961beab090527308a9607a165d6d38fd84"
-    },
-    {
-      "path": "build/sha256.o",
-      "bytes": 4048,
-      "sha256": "5298afaa4ca0fbcf5a23c731117226376b73eedd41d3ba878a318f31028b1251"
-    },
-    {
-      "path": "build/util.o",
-      "bytes": 5984,
-      "sha256": "3695626ad02ad03821461779430ec8baa72d20f749b5d90718db6786519d51ee"
-    },
-    {
-      "path": "build/vm.o",
-      "bytes": 11648,
-      "sha256": "d0b6dfbe2a8c9c4ed76719a6d2cd2a305b505ec056f1b0221a623a79fb9f24ec"
+      "bytes": 3079,
+      "sha256": "db37cf0fdf1d921825f70a74062d79357af26be7d802f0ce06e5b5f51029af9f"
     },
     {
       "path": "docs/ARCHITECTURE.md",
@@ -134,9 +71,14 @@
       "sha256": "cd026d3502996d0f6480df9df46a927f2ae0bd65618fb1817ee0fad748298797"
     },
     {
+      "path": "docs/ED25519_APPROVAL_V05.md",
+      "bytes": 1720,
+      "sha256": "174a48f134e6e7bc17de077a54b171d18ff06f695aaa1e9ee6391362dd268d5a"
+    },
+    {
       "path": "docs/NEXT_STAGES.md",
-      "bytes": 589,
-      "sha256": "19339434aae10d08828af606e0db559b3c6bf49f50e32c03e5b062d0f1b783fe"
+      "bytes": 728,
+      "sha256": "60b6c329a759d2b3696c8f67c6480ce9805d26e7fe1f6a6a8a9abeb5445cb872"
     },
     {
       "path": "docs/TYPED_QIR_V02.md",
@@ -171,7 +113,7 @@
     {
       "path": "include/qn.h",
       "bytes": 1371,
-      "sha256": "443f9283c94d65fc0c7930fefcefa8e86f6603a50f5da604f2eb606985872b12"
+      "sha256": "c18b4b445f25f6c9ca84ed031a9ef8503cbbf442c5e10c04ae44d91236a9c59d"
     },
     {
       "path": "include/qn_approval.h",
@@ -184,9 +126,14 @@
       "sha256": "62e3eadd3ed62ef4eae2fb44333f45725cd5ebfb55c35dd0d84a873f0e259040"
     },
     {
+      "path": "include/qn_ed25519.h",
+      "bytes": 1307,
+      "sha256": "cd4fb6c3dd8e50a338874493c39b9fa8991d1167e27ebb0d8f3e064b8ecf3dda"
+    },
+    {
       "path": "include/qn_guard.h",
-      "bytes": 2138,
-      "sha256": "3c6d1aa5b87cb8e66be8398f34c502373a4902dacb5b9813f69f5751ee1211fb"
+      "bytes": 2243,
+      "sha256": "7fa27f2903b86467da2ed70e56939abc33a39241719c01ea19f04e227cb386ca"
     },
     {
       "path": "include/qn_lexer.h",
@@ -209,14 +156,24 @@
       "sha256": "71315ada3a99e95cce5c85b2cf52af7efd261eb9ea00b7a23938bf14da0bd81c"
     },
     {
+      "path": "include/qn_signed_approval.h",
+      "bytes": 2302,
+      "sha256": "b4ad73044c9a6d738b510fdf17e34ad8179bd9ac62d7d996b2a0d33b65e29acb"
+    },
+    {
       "path": "include/qn_vm.h",
-      "bytes": 985,
-      "sha256": "8ba52636979f0b0a067a3d72d18055352886e79e025a3109f0e7c2020cfe2da4"
+      "bytes": 1090,
+      "sha256": "2f921347d2bed3ea41fb40d70afe83481956616667867e2a0a9d16c76a0bac74"
     },
     {
       "path": "src/approval.c",
-      "bytes": 16527,
-      "sha256": "653b07e6d6b5fa92e0a19187f741fa621cffeadd5795c493d053d97865d2cb11"
+      "bytes": 16585,
+      "sha256": "9fbd8d5ca65b9d364bd9f6bac4375eb560d9e2de56226a24b35a7af25693c2d4"
+    },
+    {
+      "path": "src/ed25519.c",
+      "bytes": 7836,
+      "sha256": "2328c0abee5befff178c3a0758962895b76dfcf655914ce4b90b8d4732781f1e"
     },
     {
       "path": "src/guard.c",
@@ -230,8 +187,8 @@
     },
     {
       "path": "src/main.c",
-      "bytes": 19574,
-      "sha256": "fb169518155daeefc50788f3657044c2a938453596b695ed7a485bc26293bd55"
+      "bytes": 33731,
+      "sha256": "280e0d272ca057d3c135cac2a931fdf3e2a8a7d4cda551572246beaccf2d0f47"
     },
     {
       "path": "src/parser.c",
@@ -254,14 +211,19 @@
       "sha256": "e6191d3c81b702e32a6362669138870800b8cc25be36dbcbabc1eb8943e589f2"
     },
     {
+      "path": "src/signed_approval.c",
+      "bytes": 20207,
+      "sha256": "b823dae3a6b4775cbf54f086538969b250c4747733b4067ebbf3368973737b5f"
+    },
+    {
       "path": "src/util.c",
       "bytes": 3704,
       "sha256": "6306c9320f76a4c97ac8ecc3ee77aab87a8b11aaa961b5604313c150809674c3"
     },
     {
       "path": "src/vm.c",
-      "bytes": 9000,
-      "sha256": "0257a53799384656c08e90b3f5bd71099836b4c568a17253d1b92e80b3b915dd"
+      "bytes": 10548,
+      "sha256": "f29a40faff160e7128ef88fa0fc0382eecf9cbdaf6eeeb1705d87ea3e07d53e9"
     },
     {
       "path": "tests/bad_unknown_register.qn",
@@ -270,8 +232,9 @@
     },
     {
       "path": "tests/run_tests.sh",
-      "bytes": 4405,
-      "sha256": "d18d1e5f7b4e45c00a52c58b5cd2db5961f5369276e0db8f787d132138a35b7c"
+      "bytes": 8338,
+      "sha256": "53e05916186070a5e0892dcfc76d1a46f26bf1b0a595a89ec6a75c364ded9ff0"
     }
-  ]
+  ],
+  "qbit_nova_c_touched": false
 }
