@@ -48,6 +48,40 @@ echo "=== VERSION ==="
 grep -q 'QBIT NOVA Native 0.5.0' "$TMP/version.out"
 grep -q 'python_dependency=false' "$TMP/version.out"
 
+echo "=== GPU ADAPTER CONTRACT ==="
+"$BIN" gpu probe \
+  --backend cpu \
+  --receipt "$TMP/gpu-cpu.json" \
+  > "$TMP/gpu-cpu.out"
+grep -q '^QBIT_NOVA_GPU_ADAPTER_CONTRACT_V06$' \
+  "$TMP/gpu-cpu.out"
+grep -q '^requested_backend=cpu$' "$TMP/gpu-cpu.out"
+grep -q '^selected_backend=cpu$' "$TMP/gpu-cpu.out"
+grep -q '^selection_reason=explicit-cpu$' "$TMP/gpu-cpu.out"
+grep -q '^gpu_execution_enabled=false$' "$TMP/gpu-cpu.out"
+grep -q '^cpu_fallback=true$' "$TMP/gpu-cpu.out"
+grep -q '^llvmpipe_hardware_gpu=false$' "$TMP/gpu-cpu.out"
+grep -q '"selected_backend": "cpu"' "$TMP/gpu-cpu.json"
+grep -q '"gpu_execution_enabled": false' "$TMP/gpu-cpu.json"
+
+"$BIN" gpu probe --backend auto > "$TMP/gpu-auto.out"
+grep -q '^requested_backend=auto$' "$TMP/gpu-auto.out"
+grep -q '^selected_backend=cpu$' "$TMP/gpu-auto.out"
+grep -Eq '^selection_reason=(gpu-kernel-not-implemented|hardware-unavailable)$' \
+  "$TMP/gpu-auto.out"
+grep -q '^gpu_execution_enabled=false$' "$TMP/gpu-auto.out"
+grep -q '^cpu_fallback=true$' "$TMP/gpu-auto.out"
+
+set +e
+"$BIN" gpu probe --backend vulkan \
+  >"$TMP/gpu-vulkan.out" \
+  2>"$TMP/gpu-vulkan.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E7005' "$TMP/gpu-vulkan.err"
+test ! -s "$TMP/gpu-vulkan.out"
+
 echo "=== OPENSSL ED25519 CSPRNG KEYGEN ==="
 "$BIN" approval keygen-ed25519 \
   --private "$TMP/random-a.key" \
@@ -663,6 +697,7 @@ echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_GPU_ADAPTER_CONTRACT_V06_STEP2"
 echo "PASS: QBIT_NOVA_RECEIPT_EVIDENCE_V052_STEP8"
 echo "PASS: QBIT_NOVA_REVOCATION_EXECUTION_WIRING_V052_STEP7"
 echo "PASS: QBIT_NOVA_REPLAY_EXECUTION_BOUNDARY_V052_STEP5"

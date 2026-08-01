@@ -8,6 +8,7 @@
 #include "qn_trust_store.h"
 #include "qn_replay_ledger.h"
 #include "qn_revocation_store.h"
+#include "qn_gpu_adapter.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -35,6 +36,8 @@ static void usage(FILE *f) {
         "            [--nonce TEXT]\n"
         "  qnova approval verify <file.qn> <token.qna> --key-file KEY\n"
         "            [--now UNIX]\n"
+        "  qnova gpu probe [--backend auto|cpu|vulkan]\n"
+        "            [--receipt file.json]\n"
         "  qnova build <file.qn> -o <file.qbc>\n"
         "  qnova run <file.qn> [--shots N] [--seed N] [--policy safe|deny-all]\n"
         "            [--signed-approval-file token.qns]\n"
@@ -556,6 +559,78 @@ int main(int argc,char **argv) {
     if(argc<3){ usage(stderr); return 1; }
 
     QNDiagnostic diag={0};
+
+    if(!strcmp(argv[1],"gpu")) {
+        if(strcmp(argv[2],"probe") != 0) {
+            qn_diag_set_code(
+                &diag,
+                "QN-E7002",
+                0,
+                0,
+                "expected GPU subcommand: probe"
+            );
+            return print_diag(QN_ERR_PARSE,&diag);
+        }
+
+        QNGpuBackendRequest requested = QN_GPU_BACKEND_AUTO;
+        const char *receipt_path = NULL;
+
+        for(int i=3;i<argc;i++) {
+            if(!strcmp(argv[i],"--backend") && i+1<argc) {
+                if(!qn_gpu_backend_parse(argv[++i],&requested)) {
+                    qn_diag_set_code(
+                        &diag,
+                        "QN-E7002",
+                        0,
+                        0,
+                        "unknown GPU backend: %s",
+                        argv[i]
+                    );
+                    return print_diag(QN_ERR_PARSE,&diag);
+                }
+            } else if(!strcmp(argv[i],"--receipt") && i+1<argc) {
+                receipt_path=argv[++i];
+            } else {
+                qn_diag_set_code(
+                    &diag,
+                    "QN-E7002",
+                    0,
+                    0,
+                    "unknown GPU probe option: %s",
+                    argv[i]
+                );
+                return print_diag(QN_ERR_PARSE,&diag);
+            }
+        }
+
+        QNGpuProbe probe;
+        QNStatus status=qn_gpu_probe(&probe,&diag);
+        if(status!=QN_OK) return print_diag(status,&diag);
+
+        QNGpuDecision decision;
+        status=qn_gpu_decide(
+            requested,
+            &probe,
+            &decision,
+            &diag
+        );
+        if(status!=QN_OK) return print_diag(status,&diag);
+
+        qn_gpu_print_contract(&probe,&decision,stdout);
+
+        if(receipt_path) {
+            status=qn_gpu_write_receipt(
+                receipt_path,
+                &probe,
+                &decision,
+                &diag
+            );
+            if(status!=QN_OK) return print_diag(status,&diag);
+            printf("receipt=%s\n",receipt_path);
+        }
+
+        return 0;
+    }
 
     if(!strcmp(argv[1],"lex")) {
         size_t size=0; char *source=qn_read_text_file(argv[2],&size,&diag);
