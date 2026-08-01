@@ -226,6 +226,33 @@ void qn_print_result(const QNBytecode *bc, const QNRunResult *result, FILE *stre
         fprintf(stream,
                 "approval_issuer_fingerprint=none\n");
     }
+    if (result->approval_revocation_checked) {
+        fprintf(stream,
+                "approval_revocation=checked-clear\n");
+        fprintf(stream,
+                "approval_token_revoked=%s\n",
+                result->approval_token_revoked
+                    ? "true"
+                    : "false");
+        fprintf(stream,
+                "approval_issuer_revoked=%s\n",
+                result->approval_issuer_revoked
+                    ? "true"
+                    : "false");
+    } else {
+        fprintf(stream,
+                "approval_revocation=not-applicable\n");
+        fprintf(stream,
+                "approval_token_revoked=not-applicable\n");
+        fprintf(stream,
+                "approval_issuer_revoked=not-applicable\n");
+    }
+
+    fprintf(stream,
+            "approval_replay=%s\n",
+            result->approval_replay_consumed
+                ? "consumed"
+                : "not-applicable");
     for(size_t i=0;i<result->entry_count;i++) {
         print_bits(stream,result->entries[i].state,bc->total_qubits);
         fprintf(stream,"=%llu\n",(unsigned long long)result->entries[i].count);
@@ -286,6 +313,47 @@ QNStatus qn_write_receipt(const char *path, const QNBytecode *bc,
         fprintf(f,
                 "  \"approval_issuer_fingerprint\": null,\n");
     }
+    fprintf(
+        f,
+        "  \"approval_revocation\": \"%s\",\n",
+        result->approval_revocation_checked
+            ? "checked-clear"
+            : "not-applicable"
+    );
+
+    if (result->approval_revocation_checked) {
+        fprintf(
+            f,
+            "  \"approval_token_revoked\": %s,\n",
+            result->approval_token_revoked
+                ? "true"
+                : "false"
+        );
+        fprintf(
+            f,
+            "  \"approval_issuer_revoked\": %s,\n",
+            result->approval_issuer_revoked
+                ? "true"
+                : "false"
+        );
+    } else {
+        fprintf(
+            f,
+            "  \"approval_token_revoked\": null,\n"
+        );
+        fprintf(
+            f,
+            "  \"approval_issuer_revoked\": null,\n"
+        );
+    }
+
+    fprintf(
+        f,
+        "  \"approval_replay\": \"%s\",\n",
+        result->approval_replay_consumed
+            ? "consumed"
+            : "not-applicable"
+    );
     fprintf(f,"  \"qubits\": %u,\n  \"shots\": %u,\n  \"seed\": %llu,\n",
             bc->total_qubits,result->shots,(unsigned long long)result->seed);
     fprintf(f,"  \"source_sha256\": \"%s\",\n  \"qbc_sha256\": \"%s\",\n",source_hex,qbc_hex);

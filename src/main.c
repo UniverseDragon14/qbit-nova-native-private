@@ -1212,6 +1212,8 @@ int main(int argc,char **argv) {
             return print_diag(st,&diag);
         }
 
+        bool revocation_checked=false;
+
         st=check_revocation_before_replay(
             &options,
             &options.policy,
@@ -1221,6 +1223,10 @@ int main(int argc,char **argv) {
         if(st!=QN_OK) {
             qn_bytecode_free(&bc);
             return print_diag(st,&diag);
+        }
+
+        if(options.signed_approval_file) {
+            revocation_checked=true;
         }
 
         st=preflight_before_replay_consume(
@@ -1272,11 +1278,14 @@ int main(int argc,char **argv) {
             &diag
         );
         if(st==QN_OK) {
-            qn_print_result(&bc,&result,stdout);
+            result.approval_revocation_checked =
+                revocation_checked;
+            result.approval_token_revoked = false;
+            result.approval_issuer_revoked = false;
+            result.approval_replay_consumed =
+                replay_consumed;
 
-            if(replay_consumed) {
-                printf("approval_replay=consumed\n");
-            }
+            qn_print_result(&bc,&result,stdout);
         }
 
         if(st==QN_OK && options.receipt) {

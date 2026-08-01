@@ -76,6 +76,10 @@ echo "=== HMAC V0.4 COMPATIBILITY ==="
   --now 2000000100 \
   > "$TMP/hmac-run.out"
 grep -q '^approval_scheme=hmac-sha256$' "$TMP/hmac-run.out"
+grep -q '^approval_revocation=not-applicable$'   "$TMP/hmac-run.out"
+grep -q '^approval_token_revoked=not-applicable$'   "$TMP/hmac-run.out"
+grep -q '^approval_issuer_revoked=not-applicable$'   "$TMP/hmac-run.out"
+grep -q '^approval_replay=not-applicable$'   "$TMP/hmac-run.out"
 
 echo "=== HMAC BLOCKED CAPABILITY REJECTION ==="
 set +e
@@ -257,10 +261,16 @@ echo "=== GUARDED EXECUTION WITH ED25519 ==="
 grep -q '^QBIT_NOVA_NATIVE_RUN_V05$' "$TMP/signed-run.out"
 grep -q '^approval_scheme=ed25519$' "$TMP/signed-run.out"
 grep -q '^approved_capabilities=model.exec$' "$TMP/signed-run.out"
+grep -q '^approval_revocation=checked-clear$'   "$TMP/signed-run.out"
+grep -q '^approval_token_revoked=false$'   "$TMP/signed-run.out"
+grep -q '^approval_issuer_revoked=false$'   "$TMP/signed-run.out"
 grep -q '^approval_replay=consumed$' "$TMP/signed-run.out"
-grep -Eq '^approval_issuer_fingerprint=[0-9a-f]{64}$' \
-  "$TMP/signed-run.out"
+grep -Eq '^approval_issuer_fingerprint=[0-9a-f]{64}$'   "$TMP/signed-run.out"
 grep -q '"approval_scheme": "ed25519"' "$TMP/receipt-a.json"
+grep -q '"approval_revocation": "checked-clear"'   "$TMP/receipt-a.json"
+grep -q '"approval_token_revoked": false'   "$TMP/receipt-a.json"
+grep -q '"approval_issuer_revoked": false'   "$TMP/receipt-a.json"
+grep -q '"approval_replay": "consumed"'   "$TMP/receipt-a.json"
 
 echo "=== REPLAYED RUN REJECTION ==="
 set +e
@@ -290,6 +300,12 @@ grep -q '^approval_scheme=ed25519$' \
   "$TMP/signed-trust-run.out"
 grep -q '^approved_capabilities=model.exec$' \
   "$TMP/signed-trust-run.out"
+grep -q '^approval_revocation=checked-clear$' \
+  "$TMP/signed-trust-run.out"
+grep -q '^approval_token_revoked=false$' \
+  "$TMP/signed-trust-run.out"
+grep -q '^approval_issuer_revoked=false$' \
+  "$TMP/signed-trust-run.out"
 grep -q '^approval_replay=consumed$' \
   "$TMP/signed-trust-run.out"
 
@@ -315,6 +331,12 @@ echo "=== EXEC REPLAY BOUNDARY ==="
   --now 2000000100 \
   > "$TMP/exec-first.out"
 
+grep -q '^approval_revocation=checked-clear$' \
+  "$TMP/exec-first.out"
+grep -q '^approval_token_revoked=false$' \
+  "$TMP/exec-first.out"
+grep -q '^approval_issuer_revoked=false$' \
+  "$TMP/exec-first.out"
 grep -q '^approval_replay=consumed$' \
   "$TMP/exec-first.out"
 
@@ -626,6 +648,10 @@ grep -q 'QN-E5010' "$TMP/shell.err"
 echo "=== SAFE PROGRAM WITHOUT APPROVAL ==="
 "$BIN" run examples/ghz3.qn > "$TMP/ghz.out"
 grep -q '^approval_scheme=none$' "$TMP/ghz.out"
+grep -q '^approval_revocation=not-applicable$'   "$TMP/ghz.out"
+grep -q '^approval_token_revoked=not-applicable$'   "$TMP/ghz.out"
+grep -q '^approval_issuer_revoked=not-applicable$'   "$TMP/ghz.out"
+grep -q '^approval_replay=not-applicable$'   "$TMP/ghz.out"
 if grep -Eq '^\|001>=|^\|010>=|^\|011>=|^\|100>=|^\|101>=|^\|110>=' \
   "$TMP/ghz.out"; then
   echo "FAIL: invalid GHZ state"
@@ -637,6 +663,7 @@ echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_RECEIPT_EVIDENCE_V052_STEP8"
 echo "PASS: QBIT_NOVA_REVOCATION_EXECUTION_WIRING_V052_STEP7"
 echo "PASS: QBIT_NOVA_REPLAY_EXECUTION_BOUNDARY_V052_STEP5"
 echo "PASS: QBIT_NOVA_TRUSTED_ISSUER_CLI_V052_STEP3"

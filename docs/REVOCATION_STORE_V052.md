@@ -46,5 +46,13 @@ Execution-boundary integration:
 - HMAC v0.4 remains a legacy compatibility path outside this
   Ed25519 revocation requirement.
 
-Deterministic receipt evidence for revocation status is deferred to
-the next hardening step.
+Successful Ed25519 `run` and `exec` output now records:
+
+- `approval_revocation=checked-clear`
+- `approval_token_revoked=false`
+- `approval_issuer_revoked=false`
+- `approval_replay=consumed`
+
+Deterministic JSON receipts record the same evidence with boolean
+token and issuer fields. HMAC and unsigned execution record
+`not-applicable`, with JSON `null` for token and issuer revocation.

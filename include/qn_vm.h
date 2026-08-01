@@ -18,6 +18,10 @@ typedef struct {
     char approval_scheme[24];
     bool has_approval_issuer;
     uint8_t approval_issuer_fingerprint[32];
+    bool approval_revocation_checked;
+    bool approval_token_revoked;
+    bool approval_issuer_revoked;
+    bool approval_replay_consumed;
     QNHistogramEntry *entries;
     size_t entry_count;
     uint8_t qbc_digest[32];
