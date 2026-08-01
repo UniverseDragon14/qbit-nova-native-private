@@ -27,6 +27,24 @@ Rules:
 - Issuer revocation returns `QN-E6108`.
 - Token revocation is checked before issuer revocation.
 
-This step provides the strict revocation-store foundation only.
-It does not yet wire revocation checks into approval verification,
-`run`, `exec`, replay consumption, or deterministic receipts.
+Execution-boundary integration:
+
+- Ed25519 `run` and `exec` require an explicit
+  `--revocation-store-file`.
+- Signature verification and trusted-key resolution complete before
+  revocation lookup.
+- Token and issuer revocation checks complete before runtime
+  preflight and before replay-ledger consumption.
+- A revoked token returns `QN-E6107` without creating or modifying
+  the replay ledger.
+- A revoked issuer returns `QN-E6108` without creating or modifying
+  the replay ledger.
+- Missing or unsafe revocation files fail closed with `QN-E6106`.
+- A missing CLI pairing fails closed with `QN-E6109`.
+- `approval verify-ed25519` remains non-mutating and does not consume
+  replay state.
+- HMAC v0.4 remains a legacy compatibility path outside this
+  Ed25519 revocation requirement.
+
+Deterministic receipt evidence for revocation status is deferred to
+the next hardening step.

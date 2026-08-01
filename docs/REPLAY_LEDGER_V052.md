@@ -34,8 +34,9 @@ Execution-boundary integration:
 
 - `run` and `exec` require `--replay-ledger-file` whenever an
   Ed25519 `--signed-approval-file` is supplied.
-- Approval verification, trust resolution, capability checks, and
-  bounded runtime preflight complete before consumption.
+- Approval verification, trust resolution, token/issuer revocation
+  checks, capability checks, and bounded runtime preflight complete
+  before consumption.
 - The token digest is consumed atomically immediately before VM entry.
 - Failed preflight does not consume the token.
 - Once consumed, a later runtime or receipt failure does not restore
@@ -45,4 +46,5 @@ Execution-boundary integration:
   enforcement in this stage.
 - Successful run output records `approval_replay=consumed`.
 
-Revocation checks are not implemented yet.
+Revocation checks are wired before preflight and replay
+consumption for Ed25519 `run` and `exec`.

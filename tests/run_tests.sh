@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Secure permissions for test revocation files.
+umask 077
+
 BIN="./build/qnova"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
@@ -37,6 +40,8 @@ printf 'QNTS1\nissuer\t%s\tcreator-secondary\n' \
 
 printf 'QNTS1\n' > "$TMP/trust-empty.qnts"
 printf 'BAD!!\n' > "$TMP/trust-malformed.qnts"
+printf 'QNRV1\n' > "$TMP/revocation-empty.qnrv"
+printf 'BAD!!\n' > "$TMP/revocation-malformed.qnrv"
 
 echo "=== VERSION ==="
 "$BIN" version > "$TMP/version.out"
@@ -124,11 +129,128 @@ grep -q '^status=valid$' "$TMP/verify-trust.out"
 grep -q '^key_source=trust-store$' "$TMP/verify-trust.out"
 grep -q '^capability=model.exec$' "$TMP/verify-trust.out"
 
+TOKEN_SHA="$(
+  sed -n 's/^token_sha256=//p' "$TMP/verify.out"
+)"
+ISSUER_FINGERPRINT="$(
+  sed -n 's/^issuer_fingerprint=//p' "$TMP/verify.out"
+)"
+
+test "${#TOKEN_SHA}" -eq 64
+test "${#ISSUER_FINGERPRINT}" -eq 64
+
+printf 'QNRV1\ntoken\t%s\trevoked-test-token\n' \
+  "$TOKEN_SHA" > "$TMP/revocation-token.qnrv"
+
+printf 'QNRV1\nissuer\t%s\tretired-test-issuer\n' \
+  "$ISSUER_FINGERPRINT" > "$TMP/revocation-issuer.qnrv"
+
+echo "=== VERIFY COMMAND REMAINS NON-MUTATING ==="
+REVOCATION_BEFORE="$(
+  sha256sum "$TMP/revocation-empty.qnrv" |
+    awk '{print $1}'
+)"
+
+"$BIN" approval verify-ed25519 \
+  examples/approval_model.qn \
+  "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --now 2000000100 \
+  > "$TMP/verify-nonmutating.out"
+
+REVOCATION_AFTER="$(
+  sha256sum "$TMP/revocation-empty.qnrv" |
+    awk '{print $1}'
+)"
+
+test "$REVOCATION_BEFORE" = "$REVOCATION_AFTER"
+test ! -e "$TMP/verify-replay.qnrl"
+
+echo "=== MISSING REVOCATION OPTION REJECTION ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-no-revocation-option.qnrl" \
+  --now 2000000100 \
+  >"$TMP/no-revocation-option.out" \
+  2>"$TMP/no-revocation-option.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E6109' "$TMP/no-revocation-option.err"
+test ! -e "$TMP/replay-no-revocation-option.qnrl"
+
+echo "=== MISSING REVOCATION FILE FAILS CLOSED ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-missing-revocation.qnrl" \
+  --revocation-store-file "$TMP/does-not-exist.qnrv" \
+  --now 2000000100 \
+  >"$TMP/missing-revocation.out" \
+  2>"$TMP/missing-revocation.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 2
+grep -q 'QN-E6106' "$TMP/missing-revocation.err"
+test ! -e "$TMP/replay-missing-revocation.qnrl"
+
+echo "=== MALFORMED REVOCATION FILE FAILS CLOSED ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-malformed-revocation.qnrl" \
+  --revocation-store-file "$TMP/revocation-malformed.qnrv" \
+  --now 2000000100 \
+  >"$TMP/malformed-revocation.out" \
+  2>"$TMP/malformed-revocation.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E6103' "$TMP/malformed-revocation.err"
+test ! -e "$TMP/replay-malformed-revocation.qnrl"
+
+echo "=== REVOKED TOKEN REJECTED BEFORE REPLAY ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-revoked-token.qnrl" \
+  --revocation-store-file "$TMP/revocation-token.qnrv" \
+  --now 2000000100 \
+  >"$TMP/revoked-token.out" \
+  2>"$TMP/revoked-token.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E6107' "$TMP/revoked-token.err"
+test ! -e "$TMP/replay-revoked-token.qnrl"
+
+echo "=== REVOKED ISSUER REJECTED BEFORE REPLAY ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-revoked-issuer.qnrl" \
+  --revocation-store-file "$TMP/revocation-issuer.qnrv" \
+  --now 2000000100 \
+  >"$TMP/revoked-issuer.out" \
+  2>"$TMP/revoked-issuer.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E6108' "$TMP/revoked-issuer.err"
+test ! -e "$TMP/replay-revoked-issuer.qnrl"
+
 echo "=== GUARDED EXECUTION WITH ED25519 ==="
 "$BIN" run examples/approval_model.qn \
   --signed-approval-file "$TMP/model.qns" \
   --approval-public-key-file "$TMP/ed-public-a.key" \
   --replay-ledger-file "$TMP/replay-a.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 \
   --receipt "$TMP/receipt-a.json" \
   > "$TMP/signed-run.out"
@@ -146,6 +268,7 @@ set +e
   --signed-approval-file "$TMP/model.qns" \
   --approval-public-key-file "$TMP/ed-public-a.key" \
   --replay-ledger-file "$TMP/replay-a.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 \
   >"$TMP/replay-run.out" 2>"$TMP/replay-run.err"
 STATUS=$?
@@ -158,6 +281,7 @@ echo "=== GUARDED EXECUTION THROUGH TRUST STORE ==="
   --signed-approval-file "$TMP/model.qns" \
   --trust-store-file "$TMP/trust-a.qnts" \
   --replay-ledger-file "$TMP/replay-trust.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 \
   > "$TMP/signed-trust-run.out"
 grep -q '^QBIT_NOVA_NATIVE_RUN_V05$' \
@@ -174,6 +298,7 @@ echo "=== DETERMINISTIC RECEIPT ==="
   --signed-approval-file "$TMP/model.qns" \
   --approval-public-key-file "$TMP/ed-public-a.key" \
   --replay-ledger-file "$TMP/replay-b.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 \
   --receipt "$TMP/receipt-b.json" >/dev/null
 cmp "$TMP/receipt-a.json" "$TMP/receipt-b.json"
@@ -186,6 +311,7 @@ echo "=== EXEC REPLAY BOUNDARY ==="
   --signed-approval-file "$TMP/model.qns" \
   --trust-store-file "$TMP/trust-a.qnts" \
   --replay-ledger-file "$TMP/replay-exec.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 \
   > "$TMP/exec-first.out"
 
@@ -197,6 +323,7 @@ set +e
   --signed-approval-file "$TMP/model.qns" \
   --trust-store-file "$TMP/trust-a.qnts" \
   --replay-ledger-file "$TMP/replay-exec.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 \
   >"$TMP/exec-replay.out" \
   2>"$TMP/exec-replay.err"
@@ -212,6 +339,7 @@ set +e
   --signed-approval-file "$TMP/model.qns" \
   --trust-store-file "$TMP/trust-a.qnts" \
   --replay-ledger-file "$TMP/replay-preflight.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --shots 1000001 \
   --now 2000000100 \
   >"$TMP/preflight.out" 2>"$TMP/preflight.err"
@@ -225,6 +353,7 @@ test ! -e "$TMP/replay-preflight.qnrl"
   --signed-approval-file "$TMP/model.qns" \
   --trust-store-file "$TMP/trust-a.qnts" \
   --replay-ledger-file "$TMP/replay-preflight.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 >/dev/null
 
 echo "=== SIGNED EXECUTION WITHOUT LEDGER REJECTION ==="
@@ -232,6 +361,7 @@ set +e
 "$BIN" run examples/approval_model.qn \
   --signed-approval-file "$TMP/model.qns" \
   --trust-store-file "$TMP/trust-a.qnts" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 \
   >"$TMP/no-ledger.out" 2>"$TMP/no-ledger.err"
 STATUS=$?
@@ -313,6 +443,8 @@ echo "=== SIGNED TOKEN WITHOUT KEY SOURCE REJECTION ==="
 set +e
 "$BIN" run examples/approval_model.qn \
   --signed-approval-file "$TMP/model.qns" \
+  --replay-ledger-file "$TMP/replay-no-key-source.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
   --now 2000000100 \
   >"$TMP/no-key-source.out" \
   2>"$TMP/no-key-source.err"
@@ -332,6 +464,18 @@ STATUS=$?
 set -e
 test "$STATUS" -eq 7
 grep -q 'QN-E5004' "$TMP/store-without-token.err"
+
+echo "=== REVOCATION STORE WITHOUT SIGNED TOKEN REJECTION ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
+  --now 2000000100 \
+  >"$TMP/revocation-without-token.out" \
+  2>"$TMP/revocation-without-token.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E6109' "$TMP/revocation-without-token.err"
 
 echo "=== TAMPERED PAYLOAD REJECTION ==="
 cp "$TMP/model.qns" "$TMP/tampered.qns"
@@ -493,6 +637,7 @@ echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_REVOCATION_EXECUTION_WIRING_V052_STEP7"
 echo "PASS: QBIT_NOVA_REPLAY_EXECUTION_BOUNDARY_V052_STEP5"
 echo "PASS: QBIT_NOVA_TRUSTED_ISSUER_CLI_V052_STEP3"
 echo "PASS: QBIT_NOVA_OPENSSL_ED25519_APPROVAL_TEST_SUITE_V05"

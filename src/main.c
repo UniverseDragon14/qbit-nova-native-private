@@ -7,6 +7,7 @@
 #include "qn_signed_approval.h"
 #include "qn_trust_store.h"
 #include "qn_replay_ledger.h"
+#include "qn_revocation_store.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -40,6 +41,7 @@ static void usage(FILE *f) {
         "            [--approval-public-key-file PUBLIC]\n"
         "            [--trust-store-file STORE]\n"
         "            [--replay-ledger-file LEDGER]\n"
+        "            [--revocation-store-file STORE]\n"
         "            [--approval-file token.qna --approval-key-file KEY]\n"
         "            [--now UNIX] [--receipt file.json]\n"
         "  qnova exec <file.qbc> [same execution options]\n"
@@ -119,6 +121,7 @@ typedef struct {
     const char *approval_public_key_file;
     const char *trust_store_file;
     const char *replay_ledger_file;
+    const char *revocation_store_file;
     uint64_t approval_now;
     bool has_approval_now;
     QNGuardPolicy policy;
@@ -155,6 +158,8 @@ static void parse_run_opts(int argc,
             options->trust_store_file=argv[++i];
         } else if(!strcmp(argv[i],"--replay-ledger-file") && i+1<argc) {
             options->replay_ledger_file=argv[++i];
+        } else if(!strcmp(argv[i],"--revocation-store-file") && i+1<argc) {
+            options->revocation_store_file=argv[++i];
         } else if(!strcmp(argv[i],"--now") && i+1<argc) {
             options->approval_now=parse_u64(argv[++i],"now");
             options->has_approval_now=true;
@@ -254,6 +259,8 @@ static QNStatus apply_approval_to_policy(
     bool has_public_key = options->approval_public_key_file != NULL;
     bool has_trust_store = options->trust_store_file != NULL;
     bool has_replay_ledger = options->replay_ledger_file != NULL;
+    bool has_revocation_store =
+        options->revocation_store_file != NULL;
 
     if (has_hmac_file != has_hmac_key) {
         qn_diag_set_code(
@@ -303,6 +310,19 @@ static QNStatus apply_approval_to_policy(
             "Ed25519 execution requires both "
             "--signed-approval-file and "
             "--replay-ledger-file"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    if (has_signed_file != has_revocation_store) {
+        qn_diag_set_code(
+            diag,
+            "QN-E6109",
+            0,
+            0,
+            "Ed25519 execution requires both "
+            "--signed-approval-file and "
+            "--revocation-store-file"
         );
         return QN_ERR_RUNTIME;
     }
@@ -419,6 +439,61 @@ static QNStatus apply_approval_to_policy(
         "hmac-sha256"
     );
     return QN_OK;
+}
+
+
+
+static QNStatus check_revocation_before_replay(
+    const RunOptions *options,
+    const QNGuardPolicy *policy,
+    QNDiagnostic *diag
+) {
+    if (!options || !policy) {
+        qn_diag_set_code(
+            diag,
+            "QN-E6101",
+            0,
+            0,
+            "invalid revocation execution arguments"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    if (!options->signed_approval_file) {
+        return QN_OK;
+    }
+
+    if (!options->revocation_store_file ||
+        !policy->has_approval_digest ||
+        !policy->has_approval_issuer) {
+        qn_diag_set_code(
+            diag,
+            "QN-E6109",
+            0,
+            0,
+            "verified Ed25519 execution requires "
+            "revocation state"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    QNRevocationStore store;
+    QNStatus status = qn_revocation_store_load_file(
+        options->revocation_store_file,
+        &store,
+        diag
+    );
+
+    if (status != QN_OK) {
+        return status;
+    }
+
+    return qn_revocation_store_check(
+        &store,
+        policy->approval_digest,
+        policy->approval_issuer_fingerprint,
+        diag
+    );
 }
 
 
@@ -1132,6 +1207,17 @@ int main(int argc,char **argv) {
             &options.policy,
             &diag
         );
+        if(st!=QN_OK) {
+            qn_bytecode_free(&bc);
+            return print_diag(st,&diag);
+        }
+
+        st=check_revocation_before_replay(
+            &options,
+            &options.policy,
+            &diag
+        );
+
         if(st!=QN_OK) {
             qn_bytecode_free(&bc);
             return print_diag(st,&diag);
