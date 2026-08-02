@@ -1,0 +1,13 @@
+# Universal Dragon OS - Buildroot config fragment.
+#
+# Applied on top of Buildroot's own qemu_aarch64_virt_defconfig (or
+# raspberrypi5_defconfig) so the base kernel/toolchain/bootloader settings
+# always come from the user's Buildroot version. See os/scripts/.
+#
+# Enable OpenSSL on the target (qnova links libcrypto/libssl).
+BR2_PACKAGE_OPENSSL=y
+# Install the qnova capability guard.
+BR2_PACKAGE_QNOVA=y
+# Brand and hostname overlay + hostname post-build hook.
+BR2_ROOTFS_OVERLAY="$(BR2_EXTERNAL_UNIVERSAL_DRAGON_PATH)/board/universal-dragon/rootfs-overlay"
+BR2_ROOTFS_POST_BUILD_SCRIPT="$(BR2_EXTERNAL_UNIVERSAL_DRAGON_PATH)/board/universal-dragon/post-build.sh"

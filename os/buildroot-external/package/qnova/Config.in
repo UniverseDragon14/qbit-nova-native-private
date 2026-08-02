@@ -1,0 +1,12 @@
+config BR2_PACKAGE_QNOVA
+	bool "qnova"
+	select BR2_PACKAGE_OPENSSL
+	help
+	  QBIT NOVA Native - a C17 capability-security virtual QCPU with
+	  Ed25519-signed, deny-by-default approval enforcement.
+
+	  Installs the `qnova` CLI into the target image. On Universal
+	  Dragon OS this is the security substrate: capability-bearing
+	  programs run only with a valid signed approval token.
+
+	  https://github.com/UniverseDragon14/qbit-nova-native-private

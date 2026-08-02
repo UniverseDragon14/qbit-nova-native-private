@@ -1,0 +1,6 @@
+NAME="Universal Dragon OS"
+ID=universal-dragon
+PRETTY_NAME="Universal Dragon OS (QBIT NOVA capability-gated)"
+VERSION="0.5-stage0"
+VERSION_ID=0.5
+HOME_URL="https://github.com/UniverseDragon14/qbit-nova-native-private"
