@@ -754,9 +754,18 @@ QNStatus qn_replay_ledger_consume(
     size_t count = 0u;
     bool seen = false;
 
+    /*
+     * Under the write lock a zero-length ledger is always a fresh ledger to
+     * initialize, never an error. The `created` flag cannot be trusted here:
+     * a concurrent consumer may have won the O_CREAT|O_EXCL race and not yet
+     * written the header, so a second process legitimately observes an empty
+     * file it did not create. The empty-existing-ledger rejection is a
+     * read-path invariant enforced by qn_replay_ledger_contains (allow_empty
+     * = false); the write path must tolerate the empty file and initialize it.
+     */
     status = validate_fd(
         fd,
-        created,
+        true,
         &size,
         &count,
         encoded,
