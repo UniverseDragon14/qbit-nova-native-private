@@ -82,6 +82,66 @@ test "$STATUS" -eq 7
 grep -q 'QN-E7005' "$TMP/gpu-vulkan.err"
 test ! -s "$TMP/gpu-vulkan.out"
 
+echo "=== GPU COMPUTE CPU REFERENCE ==="
+"$BIN" gpu compute-proof \
+  --backend cpu \
+  --receipt "$TMP/gpu-compute-cpu.json" \
+  > "$TMP/gpu-compute-cpu.out"
+grep -q '^QBIT_NOVA_GPU_COMPUTE_PROOF_V06$' \
+  "$TMP/gpu-compute-cpu.out"
+grep -q '^selected_backend=cpu$' \
+  "$TMP/gpu-compute-cpu.out"
+grep -q '^gpu_execution_attempted=false$' \
+  "$TMP/gpu-compute-cpu.out"
+grep -q '^gpu_execution_completed=false$' \
+  "$TMP/gpu-compute-cpu.out"
+grep -q '^cpu_reference_validated=true$' \
+  "$TMP/gpu-compute-cpu.out"
+grep -q '^result_match=true$' \
+  "$TMP/gpu-compute-cpu.out"
+grep -Eq '^shader_sha256=[0-9a-f]{64}$' \
+  "$TMP/gpu-compute-cpu.out"
+grep -Eq '^output_sha256=[0-9a-f]{64}$' \
+  "$TMP/gpu-compute-cpu.out"
+grep -q '"selected_backend": "cpu"' \
+  "$TMP/gpu-compute-cpu.json"
+
+echo "=== REAL V3D VULKAN COMPUTE PROOF ==="
+"$BIN" gpu compute-proof \
+  --backend vulkan \
+  --receipt "$TMP/gpu-compute-v3d.json" \
+  > "$TMP/gpu-compute-v3d.out"
+grep -q '^selected_backend=vulkan$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^selection_reason=explicit-verified-v3d$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^hardware_device=V3D ' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^hardware_vendor_id=0x14e4$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^element_count=256$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^local_size_x=64$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^dispatch_x=4$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^gpu_execution_attempted=true$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^gpu_execution_completed=true$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^cpu_reference_validated=true$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^result_match=true$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '^cpu_fallback=false$' \
+  "$TMP/gpu-compute-v3d.out"
+grep -q '"selected_backend": "vulkan"' \
+  "$TMP/gpu-compute-v3d.json"
+grep -q '"gpu_execution_completed": true' \
+  "$TMP/gpu-compute-v3d.json"
+grep -q '"result_match": true' \
+  "$TMP/gpu-compute-v3d.json"
+
 echo "=== OPENSSL ED25519 CSPRNG KEYGEN ==="
 "$BIN" approval keygen-ed25519 \
   --private "$TMP/random-a.key" \
@@ -697,6 +757,7 @@ echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_REAL_V3D_COMPUTE_V06_STEP3"
 echo "PASS: QBIT_NOVA_GPU_ADAPTER_CONTRACT_V06_STEP2"
 echo "PASS: QBIT_NOVA_RECEIPT_EVIDENCE_V052_STEP8"
 echo "PASS: QBIT_NOVA_REVOCATION_EXECUTION_WIRING_V052_STEP7"

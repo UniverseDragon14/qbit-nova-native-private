@@ -9,6 +9,7 @@
 #include "qn_replay_ledger.h"
 #include "qn_revocation_store.h"
 #include "qn_gpu_adapter.h"
+#include "qn_gpu_compute.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,8 @@ static void usage(FILE *f) {
         "  qnova approval verify <file.qn> <token.qna> --key-file KEY\n"
         "            [--now UNIX]\n"
         "  qnova gpu probe [--backend auto|cpu|vulkan]\n"
+        "            [--receipt file.json]\n"
+        "  qnova gpu compute-proof [--backend auto|cpu|vulkan]\n"
         "            [--receipt file.json]\n"
         "  qnova build <file.qn> -o <file.qbc>\n"
         "  qnova run <file.qn> [--shots N] [--seed N] [--policy safe|deny-all]\n"
@@ -561,13 +564,17 @@ int main(int argc,char **argv) {
     QNDiagnostic diag={0};
 
     if(!strcmp(argv[1],"gpu")) {
-        if(strcmp(argv[2],"probe") != 0) {
+        const bool is_probe = strcmp(argv[2],"probe") == 0;
+        const bool is_compute =
+            strcmp(argv[2],"compute-proof") == 0;
+
+        if(!is_probe && !is_compute) {
             qn_diag_set_code(
                 &diag,
                 "QN-E7002",
                 0,
                 0,
-                "expected GPU subcommand: probe"
+                "expected GPU subcommand: probe or compute-proof"
             );
             return print_diag(QN_ERR_PARSE,&diag);
         }
@@ -596,11 +603,34 @@ int main(int argc,char **argv) {
                     "QN-E7002",
                     0,
                     0,
-                    "unknown GPU probe option: %s",
+                    "unknown GPU option: %s",
                     argv[i]
                 );
                 return print_diag(QN_ERR_PARSE,&diag);
             }
+        }
+
+        if(is_compute) {
+            QNGpuComputeProof proof;
+            QNStatus status=qn_gpu_compute_proof(
+                requested,
+                &proof,
+                &diag
+            );
+            if(status!=QN_OK) return print_diag(status,&diag);
+
+            qn_gpu_compute_print(&proof,stdout);
+
+            if(receipt_path) {
+                status=qn_gpu_compute_write_receipt(
+                    receipt_path,
+                    &proof,
+                    &diag
+                );
+                if(status!=QN_OK) return print_diag(status,&diag);
+                printf("receipt=%s\n",receipt_path);
+            }
+            return 0;
         }
 
         QNGpuProbe probe;
