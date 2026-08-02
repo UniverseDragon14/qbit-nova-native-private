@@ -10,6 +10,7 @@
 #include "qn_revocation_store.h"
 #include "qn_gpu_adapter.h"
 #include "qn_gpu_compute.h"
+#include "qn_gpu_routing.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -49,6 +50,7 @@ static void usage(FILE *f) {
         "            [--replay-ledger-file LEDGER]\n"
         "            [--revocation-store-file STORE]\n"
         "            [--approval-file token.qna --approval-key-file KEY]\n"
+        "            [--backend cpu|auto|vulkan]\n"
         "            [--now UNIX] [--receipt file.json]\n"
         "  qnova exec <file.qbc> [same execution options]\n"
         "  qnova version\n");
@@ -130,6 +132,8 @@ typedef struct {
     const char *revocation_store_file;
     uint64_t approval_now;
     bool has_approval_now;
+    QNGpuBackendRequest backend;
+    bool backend_explicit;
     QNGuardPolicy policy;
 } RunOptions;
 
@@ -138,6 +142,7 @@ static void parse_run_opts(int argc,
                            int from,
                            RunOptions *options) {
     memset(options, 0, sizeof(*options));
+    options->backend = QN_GPU_BACKEND_CPU;
     qn_guard_policy_safe(&options->policy);
 
     for(int i=from;i<argc;i++) {
@@ -166,6 +171,12 @@ static void parse_run_opts(int argc,
             options->replay_ledger_file=argv[++i];
         } else if(!strcmp(argv[i],"--revocation-store-file") && i+1<argc) {
             options->revocation_store_file=argv[++i];
+        } else if(!strcmp(argv[i],"--backend") && i+1<argc) {
+            if(!qn_gpu_backend_parse(argv[++i],&options->backend)) {
+                fprintf(stderr,"unknown backend: %s\n",argv[i]);
+                exit(QN_ERR_PARSE);
+            }
+            options->backend_explicit=true;
         } else if(!strcmp(argv[i],"--now") && i+1<argc) {
             options->approval_now=parse_u64(argv[++i],"now");
             options->has_approval_now=true;
@@ -1346,6 +1357,21 @@ int main(int argc,char **argv) {
             return print_diag(st,&diag);
         }
 
+        QNGpuQvmRoute qvm_route;
+
+        st=qn_gpu_route_qvm(
+            options.backend,
+            options.backend_explicit,
+            &bc,
+            &qvm_route,
+            &diag
+        );
+
+        if(st!=QN_OK) {
+            qn_bytecode_free(&bc);
+            return print_diag(st,&diag);
+        }
+
         bool replay_consumed=false;
 
         if(options.signed_approval_file) {
@@ -1389,6 +1415,39 @@ int main(int argc,char **argv) {
             result.approval_issuer_revoked = false;
             result.approval_replay_consumed =
                 replay_consumed;
+
+            snprintf(
+                result.qvm_requested_backend,
+                sizeof(result.qvm_requested_backend),
+                "%s",
+                qn_gpu_backend_name(qvm_route.requested)
+            );
+            snprintf(
+                result.qvm_selected_backend,
+                sizeof(result.qvm_selected_backend),
+                "%s",
+                qvm_route.selected_backend
+            );
+            snprintf(
+                result.qvm_selection_reason,
+                sizeof(result.qvm_selection_reason),
+                "%s",
+                qvm_route.selection_reason
+            );
+            snprintf(
+                result.qvm_operation,
+                sizeof(result.qvm_operation),
+                "%s",
+                qvm_route.operation
+            );
+            result.qvm_gpu_eligible =
+                qvm_route.gpu_eligible;
+            result.qvm_gpu_execution_attempted =
+                qvm_route.gpu_execution_attempted;
+            result.qvm_gpu_execution_completed =
+                qvm_route.gpu_execution_completed;
+            result.qvm_cpu_fallback =
+                qvm_route.cpu_fallback;
 
             qn_print_result(&bc,&result,stdout);
         }

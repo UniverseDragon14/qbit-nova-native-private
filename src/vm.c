@@ -253,6 +253,36 @@ void qn_print_result(const QNBytecode *bc, const QNRunResult *result, FILE *stre
             result->approval_replay_consumed
                 ? "consumed"
                 : "not-applicable");
+    fprintf(stream,
+            "qvm_backend_schema=QBIT_NOVA_QVM_GPU_ROUTING_V06\n");
+    fprintf(stream,
+            "qvm_requested_backend=%s\n",
+            result->qvm_requested_backend);
+    fprintf(stream,
+            "qvm_selected_backend=%s\n",
+            result->qvm_selected_backend);
+    fprintf(stream,
+            "qvm_selection_reason=%s\n",
+            result->qvm_selection_reason);
+    fprintf(stream,
+            "qvm_operation=%s\n",
+            result->qvm_operation);
+    fprintf(stream,
+            "qvm_gpu_eligible=%s\n",
+            result->qvm_gpu_eligible ? "true" : "false");
+    fprintf(stream,
+            "qvm_gpu_execution_attempted=%s\n",
+            result->qvm_gpu_execution_attempted
+                ? "true"
+                : "false");
+    fprintf(stream,
+            "qvm_gpu_execution_completed=%s\n",
+            result->qvm_gpu_execution_completed
+                ? "true"
+                : "false");
+    fprintf(stream,
+            "qvm_cpu_fallback=%s\n",
+            result->qvm_cpu_fallback ? "true" : "false");
     for(size_t i=0;i<result->entry_count;i++) {
         print_bits(stream,result->entries[i].state,bc->total_qubits);
         fprintf(stream,"=%llu\n",(unsigned long long)result->entries[i].count);
@@ -353,6 +383,55 @@ QNStatus qn_write_receipt(const char *path, const QNBytecode *bc,
         result->approval_replay_consumed
             ? "consumed"
             : "not-applicable"
+    );
+    fprintf(
+        f,
+        "  \"qvm_backend_schema\": "
+        "\"QBIT_NOVA_QVM_GPU_ROUTING_V06\",\n"
+    );
+    fprintf(
+        f,
+        "  \"qvm_requested_backend\": \"%s\",\n",
+        result->qvm_requested_backend
+    );
+    fprintf(
+        f,
+        "  \"qvm_selected_backend\": \"%s\",\n",
+        result->qvm_selected_backend
+    );
+    fprintf(
+        f,
+        "  \"qvm_selection_reason\": \"%s\",\n",
+        result->qvm_selection_reason
+    );
+    fprintf(
+        f,
+        "  \"qvm_operation\": \"%s\",\n",
+        result->qvm_operation
+    );
+    fprintf(
+        f,
+        "  \"qvm_gpu_eligible\": %s,\n",
+        result->qvm_gpu_eligible ? "true" : "false"
+    );
+    fprintf(
+        f,
+        "  \"qvm_gpu_execution_attempted\": %s,\n",
+        result->qvm_gpu_execution_attempted
+            ? "true"
+            : "false"
+    );
+    fprintf(
+        f,
+        "  \"qvm_gpu_execution_completed\": %s,\n",
+        result->qvm_gpu_execution_completed
+            ? "true"
+            : "false"
+    );
+    fprintf(
+        f,
+        "  \"qvm_cpu_fallback\": %s,\n",
+        result->qvm_cpu_fallback ? "true" : "false"
     );
     fprintf(f,"  \"qubits\": %u,\n  \"shots\": %u,\n  \"seed\": %llu,\n",
             bc->total_qubits,result->shots,(unsigned long long)result->seed);

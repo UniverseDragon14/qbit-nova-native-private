@@ -22,6 +22,14 @@ typedef struct {
     bool approval_token_revoked;
     bool approval_issuer_revoked;
     bool approval_replay_consumed;
+    char qvm_requested_backend[16];
+    char qvm_selected_backend[16];
+    char qvm_selection_reason[96];
+    char qvm_operation[64];
+    bool qvm_gpu_eligible;
+    bool qvm_gpu_execution_attempted;
+    bool qvm_gpu_execution_completed;
+    bool qvm_cpu_fallback;
     QNHistogramEntry *entries;
     size_t entry_count;
     uint8_t qbc_digest[32];

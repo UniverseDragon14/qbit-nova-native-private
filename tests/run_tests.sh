@@ -142,6 +142,73 @@ grep -q '"gpu_execution_completed": true' \
 grep -q '"result_match": true' \
   "$TMP/gpu-compute-v3d.json"
 
+echo "=== QVM GPU ROUTING ==="
+"$BIN" run examples/ghz3.qn \
+  --backend cpu \
+  --shots 128 \
+  --seed 4242 \
+  --receipt "$TMP/qvm-cpu.json" \
+  > "$TMP/qvm-cpu.out"
+grep -q '^qvm_backend_schema=QBIT_NOVA_QVM_GPU_ROUTING_V06$' \
+  "$TMP/qvm-cpu.out"
+grep -q '^qvm_requested_backend=cpu$' "$TMP/qvm-cpu.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/qvm-cpu.out"
+grep -q '^qvm_selection_reason=explicit-cpu$' "$TMP/qvm-cpu.out"
+grep -q '^qvm_operation=quantum-state-simulation$' \
+  "$TMP/qvm-cpu.out"
+grep -q '^qvm_gpu_eligible=false$' "$TMP/qvm-cpu.out"
+grep -q '^qvm_gpu_execution_attempted=false$' "$TMP/qvm-cpu.out"
+grep -q '^qvm_gpu_execution_completed=false$' "$TMP/qvm-cpu.out"
+grep -q '^qvm_cpu_fallback=false$' "$TMP/qvm-cpu.out"
+grep -q '"qvm_requested_backend": "cpu"' "$TMP/qvm-cpu.json"
+grep -q '"qvm_selected_backend": "cpu"' "$TMP/qvm-cpu.json"
+grep -q '"qvm_cpu_fallback": false' "$TMP/qvm-cpu.json"
+
+"$BIN" run examples/ghz3.qn \
+  --backend auto \
+  --shots 128 \
+  --seed 4242 \
+  --receipt "$TMP/qvm-auto.json" \
+  > "$TMP/qvm-auto.out"
+grep -q '^qvm_requested_backend=auto$' "$TMP/qvm-auto.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/qvm-auto.out"
+grep -q '^qvm_selection_reason=qvm-operation-not-gpu-eligible$' \
+  "$TMP/qvm-auto.out"
+grep -q '^qvm_gpu_eligible=false$' "$TMP/qvm-auto.out"
+grep -q '^qvm_gpu_execution_attempted=false$' "$TMP/qvm-auto.out"
+grep -q '^qvm_gpu_execution_completed=false$' "$TMP/qvm-auto.out"
+grep -q '^qvm_cpu_fallback=true$' "$TMP/qvm-auto.out"
+grep -q '"qvm_requested_backend": "auto"' "$TMP/qvm-auto.json"
+grep -q '"qvm_selected_backend": "cpu"' "$TMP/qvm-auto.json"
+grep -q '"qvm_cpu_fallback": true' "$TMP/qvm-auto.json"
+
+grep '^|' "$TMP/qvm-cpu.out" > "$TMP/qvm-cpu.hist"
+grep '^|' "$TMP/qvm-auto.out" > "$TMP/qvm-auto.hist"
+cmp "$TMP/qvm-cpu.hist" "$TMP/qvm-auto.hist"
+
+set +e
+"$BIN" run examples/ghz3.qn \
+  --backend vulkan \
+  --receipt "$TMP/qvm-vulkan.json" \
+  >"$TMP/qvm-vulkan.out" \
+  2>"$TMP/qvm-vulkan.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E7201' "$TMP/qvm-vulkan.err"
+test ! -s "$TMP/qvm-vulkan.out"
+test ! -e "$TMP/qvm-vulkan.json"
+
+"$BIN" build examples/ghz3.qn -o "$TMP/qvm-route.qbc" >/dev/null
+"$BIN" exec "$TMP/qvm-route.qbc" \
+  --backend auto \
+  --shots 128 \
+  --seed 4242 \
+  > "$TMP/qvm-exec-auto.out"
+grep -q '^qvm_requested_backend=auto$' "$TMP/qvm-exec-auto.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/qvm-exec-auto.out"
+grep -q '^qvm_cpu_fallback=true$' "$TMP/qvm-exec-auto.out"
+
 echo "=== OPENSSL ED25519 CSPRNG KEYGEN ==="
 "$BIN" approval keygen-ed25519 \
   --private "$TMP/random-a.key" \
@@ -342,6 +409,26 @@ set -e
 test "$STATUS" -eq 7
 grep -q 'QN-E6108' "$TMP/revoked-issuer.err"
 test ! -e "$TMP/replay-revoked-issuer.qnrl"
+
+echo "=== QVM VULKAN REJECTS BEFORE REPLAY ==="
+set +e
+"$BIN" run examples/approval_model.qn \
+  --signed-approval-file "$TMP/model.qns" \
+  --trust-store-file "$TMP/trust-a.qnts" \
+  --replay-ledger-file "$TMP/replay-qvm-vulkan.qnrl" \
+  --revocation-store-file "$TMP/revocation-empty.qnrv" \
+  --backend vulkan \
+  --now 2000000100 \
+  --receipt "$TMP/qvm-vulkan-signed.json" \
+  >"$TMP/qvm-vulkan-signed.out" \
+  2>"$TMP/qvm-vulkan-signed.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E7201' "$TMP/qvm-vulkan-signed.err"
+test ! -e "$TMP/replay-qvm-vulkan.qnrl"
+test ! -e "$TMP/qvm-vulkan-signed.json"
+test ! -s "$TMP/qvm-vulkan-signed.out"
 
 echo "=== GUARDED EXECUTION WITH ED25519 ==="
 "$BIN" run examples/approval_model.qn \
@@ -746,6 +833,13 @@ grep -q '^approval_revocation=not-applicable$'   "$TMP/ghz.out"
 grep -q '^approval_token_revoked=not-applicable$'   "$TMP/ghz.out"
 grep -q '^approval_issuer_revoked=not-applicable$'   "$TMP/ghz.out"
 grep -q '^approval_replay=not-applicable$'   "$TMP/ghz.out"
+grep -q '^qvm_requested_backend=cpu$' "$TMP/ghz.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/ghz.out"
+grep -q '^qvm_selection_reason=default-cpu$' "$TMP/ghz.out"
+grep -q '^qvm_gpu_eligible=false$' "$TMP/ghz.out"
+grep -q '^qvm_gpu_execution_attempted=false$' "$TMP/ghz.out"
+grep -q '^qvm_gpu_execution_completed=false$' "$TMP/ghz.out"
+grep -q '^qvm_cpu_fallback=false$' "$TMP/ghz.out"
 if grep -Eq '^\|001>=|^\|010>=|^\|011>=|^\|100>=|^\|101>=|^\|110>=' \
   "$TMP/ghz.out"; then
   echo "FAIL: invalid GHZ state"
@@ -757,6 +851,7 @@ echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_QVM_GPU_ROUTING_V06_STEP4"
 echo "PASS: QBIT_NOVA_REAL_V3D_COMPUTE_V06_STEP3"
 echo "PASS: QBIT_NOVA_GPU_ADAPTER_CONTRACT_V06_STEP2"
 echo "PASS: QBIT_NOVA_RECEIPT_EVIDENCE_V052_STEP8"
