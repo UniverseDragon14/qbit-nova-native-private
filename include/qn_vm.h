@@ -2,6 +2,7 @@
 #define QN_VM_H
 
 #include "qn_qbc.h"
+#include "qn_gpu_routing.h"
 
 typedef struct {
     uint64_t state;
@@ -30,6 +31,14 @@ typedef struct {
     bool qvm_gpu_execution_attempted;
     bool qvm_gpu_execution_completed;
     bool qvm_cpu_fallback;
+    bool native_compute_result;
+    uint32_t compute_element_count;
+    bool compute_cpu_reference_validated;
+    bool compute_result_match;
+    char compute_hardware_device[QN_GPU_DEVICE_NAME_CAP];
+    uint32_t compute_hardware_vendor_id;
+    uint8_t compute_shader_digest[32];
+    uint8_t compute_output_digest[32];
     QNHistogramEntry *entries;
     size_t entry_count;
     uint8_t qbc_digest[32];
@@ -40,6 +49,7 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
                            uint32_t shots,
                            uint64_t seed,
                            const QNGuardPolicy *policy,
+                           const QNGpuQvmRoute *route,
                            QNRunResult *out,
                            QNDiagnostic *diag);
 void qn_print_result(const QNBytecode *bc, const QNRunResult *result, FILE *stream);

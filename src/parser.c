@@ -201,6 +201,18 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             const QNToken *n = expect(&p, TOK_INT, "integer");
             if (!n) goto fail;
             s.as.number.value = n->int_value;
+        } else if (match(&p, TOK_VECTOR_ADD_U32)) {
+            s.kind = STMT_VECTOR_ADD_U32;
+            if (!expect(&p, TOK_ARROW, "'->'")) goto fail;
+            const QNToken *output =
+                expect(&p, TOK_IDENT, "vector result name");
+            if (!output) goto fail;
+            snprintf(
+                s.as.vector_add_u32.output,
+                sizeof(s.as.vector_add_u32.output),
+                "%s",
+                output->text
+            );
         } else {
             qn_diag_set(diag, start->line, start->column, "unexpected token %s", qn_token_kind_name(start->kind));
             goto fail;

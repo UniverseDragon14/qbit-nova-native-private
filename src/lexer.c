@@ -53,6 +53,7 @@ const char *qn_token_kind_name(QNTokenKind kind) {
         case TOK_REQUIRES: return "REQUIRES";
         case TOK_SEED: return "SEED";
         case TOK_SHOTS: return "SHOTS";
+        case TOK_VECTOR_ADD_U32: return "VECTOR_ADD_U32";
         default: return "UNKNOWN";
     }
 }
@@ -70,6 +71,8 @@ static QNTokenKind keyword(const char *s) {
     if (!strcmp(s, "requires")) return TOK_REQUIRES;
     if (!strcmp(s, "seed")) return TOK_SEED;
     if (!strcmp(s, "shots")) return TOK_SHOTS;
+    if (!strcmp(s, "vector_add_u32") ||
+        !strcmp(s, "u32_vector_add")) return TOK_VECTOR_ADD_U32;
     return TOK_IDENT;
 }
 

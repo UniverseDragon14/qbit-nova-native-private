@@ -122,6 +122,8 @@ static uint64_t parse_u64(const char *s, const char *name) {
 typedef struct {
     uint32_t shots;
     uint64_t seed;
+    bool shots_explicit;
+    bool seed_explicit;
     const char *receipt;
     const char *approval_file;
     const char *approval_key_file;
@@ -148,8 +150,10 @@ static void parse_run_opts(int argc,
     for(int i=from;i<argc;i++) {
         if(!strcmp(argv[i],"--shots") && i+1<argc) {
             options->shots=(uint32_t)parse_u64(argv[++i],"shots");
+            options->shots_explicit=true;
         } else if(!strcmp(argv[i],"--seed") && i+1<argc) {
             options->seed=parse_u64(argv[++i],"seed");
+            options->seed_explicit=true;
         } else if(!strcmp(argv[i],"--receipt") && i+1<argc) {
             options->receipt=argv[++i];
         } else if(!strcmp(argv[i],"--policy") && i+1<argc) {
@@ -517,6 +521,8 @@ static QNStatus check_revocation_before_replay(
 static QNStatus preflight_before_replay_consume(
     const QNBytecode *bc,
     uint32_t requested_shots,
+    bool shots_explicit,
+    bool seed_explicit,
     const QNGuardPolicy *policy,
     QNDiagnostic *diag
 ) {
@@ -528,6 +534,20 @@ static QNStatus preflight_before_replay_consume(
 
     if (status != QN_OK) {
         return status;
+    }
+
+    if (qn_qbc_is_bounded_u32_vector_add(bc)) {
+        if (shots_explicit || seed_explicit) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7410",
+                0,
+                0,
+                "bounded vector-add does not accept --shots or --seed"
+            );
+            return QN_ERR_PARSE;
+        }
+        return QN_OK;
     }
 
     uint32_t shots = requested_shots
@@ -567,7 +587,7 @@ int main(int argc,char **argv) {
     if(argc<2){ usage(stderr); return 1; }
     if(!strcmp(argv[1],"version")){
         printf("QBIT NOVA Native %d.%d.%d\n",QN_VERSION_MAJOR,QN_VERSION_MINOR,QN_VERSION_PATCH);
-        printf("runtime=C17\npython_dependency=false\nboundary=software_virtual_qcpu\n");
+        printf("runtime=C17\npython_dependency=false\nboundary=software_virtual_qcpu,native_bounded_compute\n");
         return 0;
     }
     if(argc<3){ usage(stderr); return 1; }
@@ -1348,6 +1368,8 @@ int main(int argc,char **argv) {
         st=preflight_before_replay_consume(
             &bc,
             options.shots,
+            options.shots_explicit,
+            options.seed_explicit,
             &options.policy,
             &diag
         );
@@ -1405,6 +1427,7 @@ int main(int argc,char **argv) {
             options.shots,
             options.seed,
             &options.policy,
+            &qvm_route,
             &result,
             &diag
         );
@@ -1415,39 +1438,6 @@ int main(int argc,char **argv) {
             result.approval_issuer_revoked = false;
             result.approval_replay_consumed =
                 replay_consumed;
-
-            snprintf(
-                result.qvm_requested_backend,
-                sizeof(result.qvm_requested_backend),
-                "%s",
-                qn_gpu_backend_name(qvm_route.requested)
-            );
-            snprintf(
-                result.qvm_selected_backend,
-                sizeof(result.qvm_selected_backend),
-                "%s",
-                qvm_route.selected_backend
-            );
-            snprintf(
-                result.qvm_selection_reason,
-                sizeof(result.qvm_selection_reason),
-                "%s",
-                qvm_route.selection_reason
-            );
-            snprintf(
-                result.qvm_operation,
-                sizeof(result.qvm_operation),
-                "%s",
-                qvm_route.operation
-            );
-            result.qvm_gpu_eligible =
-                qvm_route.gpu_eligible;
-            result.qvm_gpu_execution_attempted =
-                qvm_route.gpu_execution_attempted;
-            result.qvm_gpu_execution_completed =
-                qvm_route.gpu_execution_completed;
-            result.qvm_cpu_fallback =
-                qvm_route.cpu_fallback;
 
             qn_print_result(&bc,&result,stdout);
         }

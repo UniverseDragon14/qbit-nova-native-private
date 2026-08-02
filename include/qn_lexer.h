@@ -26,7 +26,8 @@ typedef enum {
     TOK_EMIT,
     TOK_REQUIRES,
     TOK_SEED,
-    TOK_SHOTS
+    TOK_SHOTS,
+    TOK_VECTOR_ADD_U32
 } QNTokenKind;
 
 typedef struct {

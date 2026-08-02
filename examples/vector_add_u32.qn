@@ -1,0 +1,3 @@
+# Fixed, bounded native compute operation.
+vector_add_u32 -> sum
+emit sum

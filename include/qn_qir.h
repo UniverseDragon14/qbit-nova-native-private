@@ -8,7 +8,8 @@ typedef enum {
     QIR_TYPE_NONE = 0,
     QIR_TYPE_QUBIT,
     QIR_TYPE_QREG,
-    QIR_TYPE_RESULT
+    QIR_TYPE_RESULT,
+    QIR_TYPE_U32_VECTOR
 } QNQIRType;
 
 typedef enum {
@@ -17,7 +18,8 @@ typedef enum {
     QIR_OP_Z,
     QIR_OP_CX,
     QIR_OP_MEASURE_ALL,
-    QIR_OP_EMIT
+    QIR_OP_EMIT,
+    QIR_OP_U32_VECTOR_ADD
 } QNQIROpcode;
 
 typedef struct {

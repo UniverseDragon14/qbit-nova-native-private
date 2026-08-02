@@ -1,0 +1,3 @@
+vector_add_u32 -> sum
+shots 2
+emit sum

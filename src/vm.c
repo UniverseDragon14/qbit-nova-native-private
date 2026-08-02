@@ -1,4 +1,5 @@
 #include "qn_vm.h"
+#include "qn_gpu_compute.h"
 
 #include <complex.h>
 #include <math.h>
@@ -78,17 +79,52 @@ void qn_run_result_free(QNRunResult *result) {
     memset(result,0,sizeof(*result));
 }
 
-QNStatus qn_vm_run_guarded(const QNBytecode *bc,
-                           uint32_t shots,
-                           uint64_t seed,
-                           const QNGuardPolicy *policy,
-                           QNRunResult *out,
-                           QNDiagnostic *diag) {
-    memset(out,0,sizeof(*out));
+static void qn_vm_copy_route(QNRunResult *out,
+                             const QNGpuQvmRoute *route) {
+    snprintf(
+        out->qvm_requested_backend,
+        sizeof(out->qvm_requested_backend),
+        "%s",
+        qn_gpu_backend_name(route->requested)
+    );
+    snprintf(
+        out->qvm_selected_backend,
+        sizeof(out->qvm_selected_backend),
+        "%s",
+        route->selected_backend
+    );
+    snprintf(
+        out->qvm_selection_reason,
+        sizeof(out->qvm_selection_reason),
+        "%s",
+        route->selection_reason
+    );
+    snprintf(
+        out->qvm_operation,
+        sizeof(out->qvm_operation),
+        "%s",
+        route->operation
+    );
+    out->qvm_gpu_eligible = route->gpu_eligible;
+    out->qvm_gpu_execution_attempted =
+        route->gpu_execution_attempted;
+    out->qvm_gpu_execution_completed =
+        route->gpu_execution_completed;
+    out->qvm_cpu_fallback = route->cpu_fallback;
+}
+
+static QNStatus qn_vm_prepare_result(const QNBytecode *bc,
+                                     const QNGuardPolicy *policy,
+                                     const QNGpuQvmRoute *route,
+                                     QNRunResult *out,
+                                     QNDiagnostic *diag) {
+    memset(out, 0, sizeof(*out));
 
     QNStatus guard_status =
         qn_guard_enforce(bc->capability_mask, policy, diag);
-    if (guard_status != QN_OK) return guard_status;
+    if (guard_status != QN_OK) {
+        return guard_status;
+    }
 
     out->approved_capabilities =
         policy->approved & bc->capability_mask;
@@ -119,54 +155,264 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
         );
     }
 
-    if(!shots) shots=bc->default_shots;
-    if(!seed) seed=bc->default_seed;
-    if(!shots || shots>QN_MAX_SHOTS) {
-        qn_diag_set(diag,0,0,"shots must be 1..%u",QN_MAX_SHOTS);
+    qn_vm_copy_route(out, route);
+
+    uint8_t *encoded = NULL;
+    size_t encoded_size = 0u;
+    QNStatus status = qn_qbc_encode(
+        bc,
+        &encoded,
+        &encoded_size,
+        diag
+    );
+    if (status != QN_OK) {
+        return status;
+    }
+
+    qn_sha256(encoded, encoded_size, out->qbc_digest);
+    free(encoded);
+    return QN_OK;
+}
+
+static QNStatus qn_vm_run_bounded_compute(
+    const QNBytecode *bc,
+    uint32_t shots,
+    uint64_t seed,
+    const QNGpuQvmRoute *route,
+    QNRunResult *out,
+    QNDiagnostic *diag
+) {
+    (void)bc;
+
+    if (shots != 0u || seed != 0u) {
+        qn_diag_set_code(
+            diag,
+            "QN-E7410",
+            0,
+            0,
+            "bounded vector-add does not accept --shots or --seed"
+        );
+        return QN_ERR_PARSE;
+    }
+
+    QNGpuBackendRequest execution_backend;
+    if (strcmp(route->selected_backend, "cpu") == 0) {
+        execution_backend = QN_GPU_BACKEND_CPU;
+    } else if (strcmp(route->selected_backend, "vulkan") == 0) {
+        execution_backend = QN_GPU_BACKEND_VULKAN;
+    } else {
+        qn_diag_set_code(
+            diag,
+            "QN-E7411",
+            0,
+            0,
+            "bounded vector-add route selected invalid backend '%s'",
+            route->selected_backend
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    QNGpuComputeProof proof;
+    QNStatus status = qn_gpu_compute_proof(
+        execution_backend,
+        &proof,
+        diag
+    );
+    if (status != QN_OK) {
+        return status;
+    }
+
+    if (!proof.selected_backend ||
+        strcmp(proof.selected_backend, route->selected_backend) != 0 ||
+        proof.element_count != QN_U32_VECTOR_ADD_COUNT ||
+        !proof.cpu_reference_validated ||
+        !proof.result_match) {
+        qn_diag_set_code(
+            diag,
+            "QN-E7412",
+            0,
+            0,
+            "bounded vector-add execution evidence mismatch"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    out->native_compute_result = true;
+    out->shots = 1u;
+    out->seed = 0u;
+    out->qvm_gpu_execution_attempted =
+        proof.gpu_execution_attempted;
+    out->qvm_gpu_execution_completed =
+        proof.gpu_execution_completed;
+    out->qvm_cpu_fallback = route->cpu_fallback;
+    out->compute_element_count = proof.element_count;
+    out->compute_cpu_reference_validated =
+        proof.cpu_reference_validated;
+    out->compute_result_match = proof.result_match;
+    snprintf(
+        out->compute_hardware_device,
+        sizeof(out->compute_hardware_device),
+        "%s",
+        proof.hardware_device[0]
+            ? proof.hardware_device
+            : "none"
+    );
+    out->compute_hardware_vendor_id =
+        proof.hardware_vendor_id;
+    memcpy(
+        out->compute_shader_digest,
+        proof.shader_digest,
+        sizeof(out->compute_shader_digest)
+    );
+    memcpy(
+        out->compute_output_digest,
+        proof.output_digest,
+        sizeof(out->compute_output_digest)
+    );
+
+    return QN_OK;
+}
+
+QNStatus qn_vm_run_guarded(const QNBytecode *bc,
+                           uint32_t shots,
+                           uint64_t seed,
+                           const QNGuardPolicy *policy,
+                           const QNGpuQvmRoute *route,
+                           QNRunResult *out,
+                           QNDiagnostic *diag) {
+    if (!bc || !policy || !route || !out) {
+        qn_diag_set_code(
+            diag,
+            "QN-E7413",
+            0,
+            0,
+            "invalid routed VM execution arguments"
+        );
+        return QN_ERR_RUNTIME;
+    }
+
+    QNStatus status = qn_vm_prepare_result(
+        bc,
+        policy,
+        route,
+        out,
+        diag
+    );
+    if (status != QN_OK) {
+        return status;
+    }
+
+    if (qn_qbc_is_bounded_u32_vector_add(bc)) {
+        status = qn_vm_run_bounded_compute(
+            bc,
+            shots,
+            seed,
+            route,
+            out,
+            diag
+        );
+        if (status != QN_OK) {
+            qn_run_result_free(out);
+        }
+        return status;
+    }
+
+    if (strcmp(route->selected_backend, "cpu") != 0) {
+        qn_diag_set_code(
+            diag,
+            "QN-E7414",
+            0,
+            0,
+            "quantum-state simulation requires CPU route"
+        );
+        qn_run_result_free(out);
+        return QN_ERR_RUNTIME;
+    }
+
+    if (!shots) shots = bc->default_shots;
+    if (!seed) seed = bc->default_seed;
+    if (!shots || shots > QN_MAX_SHOTS) {
+        qn_diag_set(diag, 0, 0,
+                    "shots must be 1..%u", QN_MAX_SHOTS);
+        qn_run_result_free(out);
         return QN_ERR_LIMIT;
     }
-    size_t dim=(size_t)1<<bc->total_qubits;
-    double complex *amp=calloc(dim,sizeof(*amp));
-    if(!amp){ qn_diag_set(diag,0,0,"cannot allocate state vector for %u qubits",bc->total_qubits); return QN_ERR_RUNTIME; }
 
-    uint8_t *encoded=NULL; size_t encoded_size=0;
-    if(qn_qbc_encode(bc,&encoded,&encoded_size,diag)!=QN_OK){ free(amp); return QN_ERR_QBC; }
-    qn_sha256(encoded,encoded_size,out->qbc_digest);
-    free(encoded);
+    size_t dim = (size_t)1 << bc->total_qubits;
+    double complex *amp = calloc(dim, sizeof(*amp));
+    if (!amp) {
+        qn_diag_set(diag, 0, 0,
+                    "cannot allocate state vector for %u qubits",
+                    bc->total_qubits);
+        qn_run_result_free(out);
+        return QN_ERR_RUNTIME;
+    }
 
-    out->shots=shots; out->seed=seed;
-    RNG rng={seed};
+    out->shots = shots;
+    out->seed = seed;
+    RNG rng = {seed};
 
-    for(uint32_t shot=0;shot<shots;shot++) {
-        memset(amp,0,dim*sizeof(*amp));
-        amp[bc->initial_basis]=1.0+0.0*I;
-        bool measured=false;
-        uint64_t state=0;
+    for (uint32_t shot = 0; shot < shots; ++shot) {
+        memset(amp, 0, dim * sizeof(*amp));
+        amp[bc->initial_basis] = 1.0 + 0.0 * I;
+        bool measured = false;
+        uint64_t state = 0;
 
-        for(size_t i=0;i<bc->instruction_count;i++) {
-            const QNInstruction *in=&bc->instructions[i];
-            switch(in->opcode) {
-                case OP_H: gate_h(amp,dim,in->a); break;
-                case OP_X: gate_x(amp,dim,in->a); break;
-                case OP_Z: gate_z(amp,dim,in->a); break;
-                case OP_CX: gate_cx(amp,dim,in->a,in->b); break;
-                case OP_MEASURE_ALL: state=measure_all(amp,dim,&rng); measured=true; break;
-                case OP_EMIT: break;
-                case OP_END: i=bc->instruction_count; break;
+        for (size_t i = 0; i < bc->instruction_count; ++i) {
+            const QNInstruction *in = &bc->instructions[i];
+            switch (in->opcode) {
+                case OP_H: gate_h(amp, dim, in->a); break;
+                case OP_X: gate_x(amp, dim, in->a); break;
+                case OP_Z: gate_z(amp, dim, in->a); break;
+                case OP_CX:
+                    gate_cx(amp, dim, in->a, in->b);
+                    break;
+                case OP_MEASURE_ALL:
+                    state = measure_all(amp, dim, &rng);
+                    measured = true;
+                    break;
+                case OP_EMIT:
+                    break;
+                case OP_END:
+                    i = bc->instruction_count;
+                    break;
+                case OP_U32_VECTOR_ADD:
+                    qn_diag_set_code(
+                        diag,
+                        "QN-E7415",
+                        0,
+                        0,
+                        "bounded compute opcode reached quantum VM"
+                    );
+                    free(amp);
+                    qn_run_result_free(out);
+                    return QN_ERR_RUNTIME;
                 default:
-                    qn_diag_set(diag,0,0,"unknown opcode 0x%02x",in->opcode);
-                    free(amp); qn_run_result_free(out); return QN_ERR_RUNTIME;
+                    qn_diag_set(diag, 0, 0,
+                                "unknown opcode 0x%02x", in->opcode);
+                    free(amp);
+                    qn_run_result_free(out);
+                    return QN_ERR_RUNTIME;
             }
         }
-        if(!measured) {
-            qn_diag_set(diag,0,0,"bytecode ended without measurement");
-            free(amp); qn_run_result_free(out); return QN_ERR_RUNTIME;
+
+        if (!measured) {
+            qn_diag_set(diag, 0, 0,
+                        "bytecode ended without measurement");
+            free(amp);
+            qn_run_result_free(out);
+            return QN_ERR_RUNTIME;
         }
-        if(!hist_add(out,state)) {
-            qn_diag_set(diag,0,0,"out of memory building histogram");
-            free(amp); qn_run_result_free(out); return QN_ERR_RUNTIME;
+
+        if (!hist_add(out, state)) {
+            qn_diag_set(diag, 0, 0,
+                        "out of memory building histogram");
+            free(amp);
+            qn_run_result_free(out);
+            return QN_ERR_RUNTIME;
         }
     }
+
     free(amp);
     return QN_OK;
 }
@@ -177,174 +423,263 @@ static void print_bits(FILE *f, uint64_t state, unsigned n) {
     fputc('>',f);
 }
 
-void qn_print_result(const QNBytecode *bc, const QNRunResult *result, FILE *stream) {
-    char qbc_hex[65], source_hex[65];
-    qn_hex32(result->qbc_digest,qbc_hex);
-    qn_hex32(bc->source_digest,source_hex);
-    fprintf(stream,"QBIT_NOVA_NATIVE_RUN_V05\n");
-    fprintf(stream,"boundary=software_virtual_qcpu\n");
-    fprintf(stream,"physical_qpu=false\n");
-    fprintf(stream,"qubits=%u\nshots=%u\nseed=%llu\n",
-            bc->total_qubits,result->shots,(unsigned long long)result->seed);
-    fprintf(stream,"source_sha256=%s\nqbc_sha256=%s\n",source_hex,qbc_hex);
-    char capability_text[256];
-    qn_capability_format(
-        bc->capability_mask,
-        capability_text,
-        sizeof(capability_text)
-    );
-    fprintf(stream,"capabilities=%s\n",capability_text);
-    fprintf(stream,"guard=allowed\n");
+static void qn_print_approval_lines(const QNRunResult *result,
+                                    FILE *stream) {
     char approved_text[256];
     qn_capability_format(
         result->approved_capabilities,
         approved_text,
         sizeof(approved_text)
     );
-    fprintf(stream,"approved_capabilities=%s\n",approved_text);
-    fprintf(stream,"approval_scheme=%s\n",
-            result->approval_scheme[0]
-                ? result->approval_scheme
-                : "none");
+    fprintf(stream, "approved_capabilities=%s\n", approved_text);
+    fprintf(
+        stream,
+        "approval_scheme=%s\n",
+        result->approval_scheme[0]
+            ? result->approval_scheme
+            : "none"
+    );
+
     if (result->has_approval_digest) {
         char approval_hex[65];
         qn_hex32(result->approval_digest, approval_hex);
-        fprintf(stream,"approval_token_sha256=%s\n",approval_hex);
+        fprintf(stream, "approval_token_sha256=%s\n", approval_hex);
     } else {
-        fprintf(stream,"approval_token_sha256=none\n");
+        fprintf(stream, "approval_token_sha256=none\n");
     }
+
     if (result->has_approval_issuer) {
         char issuer_hex[65];
         qn_hex32(
             result->approval_issuer_fingerprint,
             issuer_hex
         );
-        fprintf(stream,
-                "approval_issuer_fingerprint=%s\n",
-                issuer_hex);
+        fprintf(
+            stream,
+            "approval_issuer_fingerprint=%s\n",
+            issuer_hex
+        );
     } else {
-        fprintf(stream,
-                "approval_issuer_fingerprint=none\n");
-    }
-    if (result->approval_revocation_checked) {
-        fprintf(stream,
-                "approval_revocation=checked-clear\n");
-        fprintf(stream,
-                "approval_token_revoked=%s\n",
-                result->approval_token_revoked
-                    ? "true"
-                    : "false");
-        fprintf(stream,
-                "approval_issuer_revoked=%s\n",
-                result->approval_issuer_revoked
-                    ? "true"
-                    : "false");
-    } else {
-        fprintf(stream,
-                "approval_revocation=not-applicable\n");
-        fprintf(stream,
-                "approval_token_revoked=not-applicable\n");
-        fprintf(stream,
-                "approval_issuer_revoked=not-applicable\n");
+        fprintf(stream, "approval_issuer_fingerprint=none\n");
     }
 
-    fprintf(stream,
-            "approval_replay=%s\n",
-            result->approval_replay_consumed
-                ? "consumed"
-                : "not-applicable");
-    fprintf(stream,
-            "qvm_backend_schema=QBIT_NOVA_QVM_GPU_ROUTING_V06\n");
-    fprintf(stream,
-            "qvm_requested_backend=%s\n",
-            result->qvm_requested_backend);
-    fprintf(stream,
-            "qvm_selected_backend=%s\n",
-            result->qvm_selected_backend);
-    fprintf(stream,
-            "qvm_selection_reason=%s\n",
-            result->qvm_selection_reason);
-    fprintf(stream,
-            "qvm_operation=%s\n",
-            result->qvm_operation);
-    fprintf(stream,
-            "qvm_gpu_eligible=%s\n",
-            result->qvm_gpu_eligible ? "true" : "false");
-    fprintf(stream,
-            "qvm_gpu_execution_attempted=%s\n",
-            result->qvm_gpu_execution_attempted
+    if (result->approval_revocation_checked) {
+        fprintf(stream, "approval_revocation=checked-clear\n");
+        fprintf(
+            stream,
+            "approval_token_revoked=%s\n",
+            result->approval_token_revoked ? "true" : "false"
+        );
+        fprintf(
+            stream,
+            "approval_issuer_revoked=%s\n",
+            result->approval_issuer_revoked ? "true" : "false"
+        );
+    } else {
+        fprintf(stream, "approval_revocation=not-applicable\n");
+        fprintf(stream, "approval_token_revoked=not-applicable\n");
+        fprintf(stream, "approval_issuer_revoked=not-applicable\n");
+    }
+
+    fprintf(
+        stream,
+        "approval_replay=%s\n",
+        result->approval_replay_consumed
+            ? "consumed"
+            : "not-applicable"
+    );
+}
+
+static void qn_print_route_lines(const QNRunResult *result,
+                                 FILE *stream) {
+    fprintf(
+        stream,
+        "qvm_backend_schema=QBIT_NOVA_QVM_GPU_ROUTING_V06\n"
+    );
+    fprintf(
+        stream,
+        "qvm_requested_backend=%s\n",
+        result->qvm_requested_backend
+    );
+    fprintf(
+        stream,
+        "qvm_selected_backend=%s\n",
+        result->qvm_selected_backend
+    );
+    fprintf(
+        stream,
+        "qvm_selection_reason=%s\n",
+        result->qvm_selection_reason
+    );
+    fprintf(stream, "qvm_operation=%s\n", result->qvm_operation);
+    fprintf(
+        stream,
+        "qvm_gpu_eligible=%s\n",
+        result->qvm_gpu_eligible ? "true" : "false"
+    );
+    fprintf(
+        stream,
+        "qvm_gpu_execution_attempted=%s\n",
+        result->qvm_gpu_execution_attempted ? "true" : "false"
+    );
+    fprintf(
+        stream,
+        "qvm_gpu_execution_completed=%s\n",
+        result->qvm_gpu_execution_completed ? "true" : "false"
+    );
+    fprintf(
+        stream,
+        "qvm_cpu_fallback=%s\n",
+        result->qvm_cpu_fallback ? "true" : "false"
+    );
+}
+
+void qn_print_result(const QNBytecode *bc,
+                     const QNRunResult *result,
+                     FILE *stream) {
+    char qbc_hex[65];
+    char source_hex[65];
+    qn_hex32(result->qbc_digest, qbc_hex);
+    qn_hex32(bc->source_digest, source_hex);
+
+    char capability_text[256];
+    qn_capability_format(
+        bc->capability_mask,
+        capability_text,
+        sizeof(capability_text)
+    );
+
+    if (result->native_compute_result) {
+        char shader_hex[65];
+        char output_hex[65];
+        qn_hex32(result->compute_shader_digest, shader_hex);
+        qn_hex32(result->compute_output_digest, output_hex);
+
+        fprintf(stream, "QBIT_NOVA_NATIVE_COMPUTE_RUN_V06\n");
+        fprintf(stream, "boundary=native_bounded_compute\n");
+        fprintf(stream, "physical_qpu=false\n");
+        fprintf(stream, "qubits=0\n");
+        fprintf(stream, "source_sha256=%s\n", source_hex);
+        fprintf(stream, "qbc_sha256=%s\n", qbc_hex);
+        fprintf(stream, "capabilities=%s\n", capability_text);
+        fprintf(stream, "guard=allowed\n");
+        qn_print_approval_lines(result, stream);
+        qn_print_route_lines(result, stream);
+        fprintf(stream, "compute_contract=bounded-u32-vector-add-v1\n");
+        fprintf(stream, "input_contract=deterministic-fixed-v1\n");
+        fprintf(
+            stream,
+            "element_count=%u\n",
+            result->compute_element_count
+        );
+        fprintf(stream, "integer_width=32\n");
+        fprintf(stream, "overflow_semantics=uint32-modulo\n");
+        fprintf(
+            stream,
+            "hardware_device=%s\n",
+            result->compute_hardware_device[0]
+                ? result->compute_hardware_device
+                : "none"
+        );
+        fprintf(
+            stream,
+            "hardware_vendor_id=0x%04x\n",
+            result->compute_hardware_vendor_id
+        );
+        fprintf(
+            stream,
+            "cpu_reference_validated=%s\n",
+            result->compute_cpu_reference_validated
                 ? "true"
-                : "false");
-    fprintf(stream,
-            "qvm_gpu_execution_completed=%s\n",
-            result->qvm_gpu_execution_completed
-                ? "true"
-                : "false");
-    fprintf(stream,
-            "qvm_cpu_fallback=%s\n",
-            result->qvm_cpu_fallback ? "true" : "false");
-    for(size_t i=0;i<result->entry_count;i++) {
-        print_bits(stream,result->entries[i].state,bc->total_qubits);
-        fprintf(stream,"=%llu\n",(unsigned long long)result->entries[i].count);
+                : "false"
+        );
+        fprintf(
+            stream,
+            "result_match=%s\n",
+            result->compute_result_match ? "true" : "false"
+        );
+        fprintf(stream, "shader_sha256=%s\n", shader_hex);
+        fprintf(stream, "output_sha256=%s\n", output_hex);
+        return;
+    }
+
+    fprintf(stream, "QBIT_NOVA_NATIVE_RUN_V05\n");
+    fprintf(stream, "boundary=software_virtual_qcpu\n");
+    fprintf(stream, "physical_qpu=false\n");
+    fprintf(
+        stream,
+        "qubits=%u\nshots=%u\nseed=%llu\n",
+        bc->total_qubits,
+        result->shots,
+        (unsigned long long)result->seed
+    );
+    fprintf(stream, "source_sha256=%s\n", source_hex);
+    fprintf(stream, "qbc_sha256=%s\n", qbc_hex);
+    fprintf(stream, "capabilities=%s\n", capability_text);
+    fprintf(stream, "guard=allowed\n");
+    qn_print_approval_lines(result, stream);
+    qn_print_route_lines(result, stream);
+
+    for (size_t i = 0; i < result->entry_count; ++i) {
+        print_bits(stream, result->entries[i].state, bc->total_qubits);
+        fprintf(
+            stream,
+            "=%llu\n",
+            (unsigned long long)result->entries[i].count
+        );
     }
 }
 
-QNStatus qn_write_receipt(const char *path, const QNBytecode *bc,
-                          const QNRunResult *result, QNDiagnostic *diag) {
-    FILE *f=fopen(path,"wb");
-    if(!f){ qn_diag_set(diag,0,0,"cannot create receipt '%s'",path); return QN_ERR_IO; }
-    char qbc_hex[65], source_hex[65];
-    qn_hex32(result->qbc_digest,qbc_hex);
-    qn_hex32(bc->source_digest,source_hex);
-    fprintf(f,"{\n");
-    fprintf(f,"  \"marker\": \"QBIT_NOVA_NATIVE_RECEIPT_V05\",\n");
-    fprintf(f,"  \"creator\": \"Universal Dragon Aslam\",\n");
-    fprintf(f,"  \"boundary\": \"software_virtual_qcpu\",\n");
-    fprintf(f,"  \"physical_qpu\": false,\n");
-    char capability_text[256];
-    qn_capability_format(
-        bc->capability_mask,
-        capability_text,
-        sizeof(capability_text)
-    );
-    fprintf(f,"  \"guard\": \"allowed\",\n");
-    fprintf(f,"  \"capabilities\": \"%s\",\n",
-            capability_text);
+static void qn_write_approval_json(FILE *stream,
+                                   const QNRunResult *result) {
     char approved_text[256];
     qn_capability_format(
         result->approved_capabilities,
         approved_text,
         sizeof(approved_text)
     );
-    fprintf(f,"  \"approved_capabilities\": \"%s\",\n",
-            approved_text);
-    fprintf(f,"  \"approval_scheme\": \"%s\",\n",
-            result->approval_scheme[0]
-                ? result->approval_scheme
-                : "none");
+    fprintf(
+        stream,
+        "  \"approved_capabilities\": \"%s\",\n",
+        approved_text
+    );
+    fprintf(
+        stream,
+        "  \"approval_scheme\": \"%s\",\n",
+        result->approval_scheme[0]
+            ? result->approval_scheme
+            : "none"
+    );
+
     if (result->has_approval_digest) {
         char approval_hex[65];
         qn_hex32(result->approval_digest, approval_hex);
-        fprintf(f,"  \"approval_token_sha256\": \"%s\",\n",
-                approval_hex);
+        fprintf(
+            stream,
+            "  \"approval_token_sha256\": \"%s\",\n",
+            approval_hex
+        );
     } else {
-        fprintf(f,"  \"approval_token_sha256\": null,\n");
+        fprintf(stream, "  \"approval_token_sha256\": null,\n");
     }
+
     if (result->has_approval_issuer) {
         char issuer_hex[65];
         qn_hex32(
             result->approval_issuer_fingerprint,
             issuer_hex
         );
-        fprintf(f,
-                "  \"approval_issuer_fingerprint\": \"%s\",\n",
-                issuer_hex);
+        fprintf(
+            stream,
+            "  \"approval_issuer_fingerprint\": \"%s\",\n",
+            issuer_hex
+        );
     } else {
-        fprintf(f,
-                "  \"approval_issuer_fingerprint\": null,\n");
+        fprintf(stream, "  \"approval_issuer_fingerprint\": null,\n");
     }
+
     fprintf(
-        f,
+        stream,
         "  \"approval_revocation\": \"%s\",\n",
         result->approval_revocation_checked
             ? "checked-clear"
@@ -353,97 +688,252 @@ QNStatus qn_write_receipt(const char *path, const QNBytecode *bc,
 
     if (result->approval_revocation_checked) {
         fprintf(
-            f,
+            stream,
             "  \"approval_token_revoked\": %s,\n",
-            result->approval_token_revoked
-                ? "true"
-                : "false"
+            result->approval_token_revoked ? "true" : "false"
         );
         fprintf(
-            f,
+            stream,
             "  \"approval_issuer_revoked\": %s,\n",
-            result->approval_issuer_revoked
-                ? "true"
-                : "false"
+            result->approval_issuer_revoked ? "true" : "false"
         );
     } else {
-        fprintf(
-            f,
-            "  \"approval_token_revoked\": null,\n"
-        );
-        fprintf(
-            f,
-            "  \"approval_issuer_revoked\": null,\n"
-        );
+        fprintf(stream, "  \"approval_token_revoked\": null,\n");
+        fprintf(stream, "  \"approval_issuer_revoked\": null,\n");
     }
 
     fprintf(
-        f,
+        stream,
         "  \"approval_replay\": \"%s\",\n",
         result->approval_replay_consumed
             ? "consumed"
             : "not-applicable"
     );
+}
+
+static void qn_write_route_json(FILE *stream,
+                                const QNRunResult *result) {
     fprintf(
-        f,
+        stream,
         "  \"qvm_backend_schema\": "
         "\"QBIT_NOVA_QVM_GPU_ROUTING_V06\",\n"
     );
     fprintf(
-        f,
+        stream,
         "  \"qvm_requested_backend\": \"%s\",\n",
         result->qvm_requested_backend
     );
     fprintf(
-        f,
+        stream,
         "  \"qvm_selected_backend\": \"%s\",\n",
         result->qvm_selected_backend
     );
     fprintf(
-        f,
+        stream,
         "  \"qvm_selection_reason\": \"%s\",\n",
         result->qvm_selection_reason
     );
     fprintf(
-        f,
+        stream,
         "  \"qvm_operation\": \"%s\",\n",
         result->qvm_operation
     );
     fprintf(
-        f,
+        stream,
         "  \"qvm_gpu_eligible\": %s,\n",
         result->qvm_gpu_eligible ? "true" : "false"
     );
     fprintf(
-        f,
+        stream,
         "  \"qvm_gpu_execution_attempted\": %s,\n",
-        result->qvm_gpu_execution_attempted
-            ? "true"
-            : "false"
+        result->qvm_gpu_execution_attempted ? "true" : "false"
     );
     fprintf(
-        f,
+        stream,
         "  \"qvm_gpu_execution_completed\": %s,\n",
-        result->qvm_gpu_execution_completed
-            ? "true"
-            : "false"
+        result->qvm_gpu_execution_completed ? "true" : "false"
     );
     fprintf(
-        f,
+        stream,
         "  \"qvm_cpu_fallback\": %s,\n",
         result->qvm_cpu_fallback ? "true" : "false"
     );
-    fprintf(f,"  \"qubits\": %u,\n  \"shots\": %u,\n  \"seed\": %llu,\n",
-            bc->total_qubits,result->shots,(unsigned long long)result->seed);
-    fprintf(f,"  \"source_sha256\": \"%s\",\n  \"qbc_sha256\": \"%s\",\n",source_hex,qbc_hex);
-    fprintf(f,"  \"histogram\": {");
-    for(size_t i=0;i<result->entry_count;i++) {
-        if(i) fprintf(f,", ");
-        fprintf(f,"\"");
-        for(int q=(int)bc->total_qubits-1;q>=0;q--) fputc((result->entries[i].state>>q)&1u?'1':'0',f);
-        fprintf(f,"\": %llu",(unsigned long long)result->entries[i].count);
+}
+
+static QNStatus qn_write_compute_receipt(
+    FILE *stream,
+    const QNBytecode *bc,
+    const QNRunResult *result
+) {
+    char qbc_hex[65];
+    char source_hex[65];
+    char shader_hex[65];
+    char output_hex[65];
+    char capability_text[256];
+
+    qn_hex32(result->qbc_digest, qbc_hex);
+    qn_hex32(bc->source_digest, source_hex);
+    qn_hex32(result->compute_shader_digest, shader_hex);
+    qn_hex32(result->compute_output_digest, output_hex);
+    qn_capability_format(
+        bc->capability_mask,
+        capability_text,
+        sizeof(capability_text)
+    );
+
+    fprintf(stream, "{\n");
+    fprintf(
+        stream,
+        "  \"marker\": \"QBIT_NOVA_NATIVE_COMPUTE_RECEIPT_V06\",\n"
+    );
+    fprintf(stream, "  \"creator\": \"Universal Dragon Aslam\",\n");
+    fprintf(stream, "  \"boundary\": \"native_bounded_compute\",\n");
+    fprintf(stream, "  \"physical_qpu\": false,\n");
+    fprintf(stream, "  \"guard\": \"allowed\",\n");
+    fprintf(
+        stream,
+        "  \"capabilities\": \"%s\",\n",
+        capability_text
+    );
+    qn_write_approval_json(stream, result);
+    qn_write_route_json(stream, result);
+    fprintf(
+        stream,
+        "  \"compute_contract\": \"bounded-u32-vector-add-v1\",\n"
+    );
+    fprintf(
+        stream,
+        "  \"input_contract\": \"deterministic-fixed-v1\",\n"
+    );
+    fprintf(
+        stream,
+        "  \"element_count\": %u,\n",
+        result->compute_element_count
+    );
+    fprintf(stream, "  \"integer_width\": 32,\n");
+    fprintf(stream, "  \"overflow_semantics\": \"uint32-modulo\",\n");
+    fprintf(
+        stream,
+        "  \"hardware_device\": \"%s\",\n",
+        result->compute_hardware_device[0]
+            ? result->compute_hardware_device
+            : "none"
+    );
+    fprintf(
+        stream,
+        "  \"hardware_vendor_id\": \"0x%04x\",\n",
+        result->compute_hardware_vendor_id
+    );
+    fprintf(
+        stream,
+        "  \"cpu_reference_validated\": %s,\n",
+        result->compute_cpu_reference_validated ? "true" : "false"
+    );
+    fprintf(
+        stream,
+        "  \"result_match\": %s,\n",
+        result->compute_result_match ? "true" : "false"
+    );
+    fprintf(
+        stream,
+        "  \"shader_sha256\": \"%s\",\n",
+        shader_hex
+    );
+    fprintf(
+        stream,
+        "  \"output_sha256\": \"%s\",\n",
+        output_hex
+    );
+    fprintf(stream, "  \"qubits\": 0,\n");
+    fprintf(stream, "  \"source_sha256\": \"%s\",\n", source_hex);
+    fprintf(stream, "  \"qbc_sha256\": \"%s\"\n", qbc_hex);
+    fprintf(stream, "}\n");
+    return QN_OK;
+}
+
+QNStatus qn_write_receipt(const char *path,
+                          const QNBytecode *bc,
+                          const QNRunResult *result,
+                          QNDiagnostic *diag) {
+    FILE *stream = fopen(path, "wb");
+    if (!stream) {
+        qn_diag_set(diag, 0, 0,
+                    "cannot create receipt '%s'", path);
+        return QN_ERR_IO;
     }
-    fprintf(f,"}\n}\n");
-    if(fclose(f)!=0){ qn_diag_set(diag,0,0,"failed closing receipt"); return QN_ERR_IO; }
+
+    if (result->native_compute_result) {
+        qn_write_compute_receipt(stream, bc, result);
+    } else {
+        char qbc_hex[65];
+        char source_hex[65];
+        char capability_text[256];
+        qn_hex32(result->qbc_digest, qbc_hex);
+        qn_hex32(bc->source_digest, source_hex);
+        qn_capability_format(
+            bc->capability_mask,
+            capability_text,
+            sizeof(capability_text)
+        );
+
+        fprintf(stream, "{\n");
+        fprintf(
+            stream,
+            "  \"marker\": \"QBIT_NOVA_NATIVE_RECEIPT_V05\",\n"
+        );
+        fprintf(stream, "  \"creator\": \"Universal Dragon Aslam\",\n");
+        fprintf(stream, "  \"boundary\": \"software_virtual_qcpu\",\n");
+        fprintf(stream, "  \"physical_qpu\": false,\n");
+        fprintf(stream, "  \"guard\": \"allowed\",\n");
+        fprintf(
+            stream,
+            "  \"capabilities\": \"%s\",\n",
+            capability_text
+        );
+        qn_write_approval_json(stream, result);
+        qn_write_route_json(stream, result);
+        fprintf(stream, "  \"qubits\": %u,\n", bc->total_qubits);
+        fprintf(stream, "  \"shots\": %u,\n", result->shots);
+        fprintf(
+            stream,
+            "  \"seed\": %llu,\n",
+            (unsigned long long)result->seed
+        );
+        fprintf(
+            stream,
+            "  \"source_sha256\": \"%s\",\n",
+            source_hex
+        );
+        fprintf(
+            stream,
+            "  \"qbc_sha256\": \"%s\",\n",
+            qbc_hex
+        );
+        fprintf(stream, "  \"histogram\": {");
+        for (size_t i = 0; i < result->entry_count; ++i) {
+            if (i) fprintf(stream, ", ");
+            fprintf(stream, "\"");
+            for (int q = (int)bc->total_qubits - 1; q >= 0; --q) {
+                fputc(
+                    (result->entries[i].state >> q) & 1u
+                        ? '1'
+                        : '0',
+                    stream
+                );
+            }
+            fprintf(
+                stream,
+                "\": %llu",
+                (unsigned long long)result->entries[i].count
+            );
+        }
+        fprintf(stream, "}\n}\n");
+    }
+
+    if (fclose(stream) != 0) {
+        qn_diag_set(diag, 0, 0, "failed closing receipt");
+        return QN_ERR_IO;
+    }
+
     return QN_OK;
 }

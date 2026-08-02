@@ -209,6 +209,213 @@ grep -q '^qvm_requested_backend=auto$' "$TMP/qvm-exec-auto.out"
 grep -q '^qvm_selected_backend=cpu$' "$TMP/qvm-exec-auto.out"
 grep -q '^qvm_cpu_fallback=true$' "$TMP/qvm-exec-auto.out"
 
+echo "=== NATIVE BOUNDED GPU OPERATION ==="
+"$BIN" qir examples/vector_add_u32.qn \
+  > "$TMP/vector-qir.out"
+grep -q '^qubits=0$' "$TMP/vector-qir.out"
+grep -q '^capabilities=evidence.emit,compute.u32_vector_add$' \
+  "$TMP/vector-qir.out"
+grep -q 'U32.VECTOR.ADD' "$TMP/vector-qir.out"
+grep -q 'u32vec<256> fixed_input_a' "$TMP/vector-qir.out"
+grep -q 'u32vec<256> sum' "$TMP/vector-qir.out"
+
+"$BIN" build examples/vector_add_u32.qn \
+  -o "$TMP/vector-a.qbc" >/dev/null
+"$BIN" build examples/vector_add_u32.qn \
+  -o "$TMP/vector-b.qbc" >/dev/null
+cmp "$TMP/vector-a.qbc" "$TMP/vector-b.qbc"
+test "$(stat -c '%s' "$TMP/vector-a.qbc")" -eq 104
+
+test "$({
+  od -An -tu1 -j 80 -N 1 "$TMP/vector-a.qbc" |
+    tr -d '[:space:]'
+})" = "80"
+
+"$BIN" run examples/vector_add_u32.qn \
+  --backend cpu \
+  --receipt "$TMP/vector-cpu.json" \
+  > "$TMP/vector-cpu.out"
+grep -q '^QBIT_NOVA_NATIVE_COMPUTE_RUN_V06$' \
+  "$TMP/vector-cpu.out"
+grep -q '^boundary=native_bounded_compute$' \
+  "$TMP/vector-cpu.out"
+grep -q '^qvm_requested_backend=cpu$' "$TMP/vector-cpu.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/vector-cpu.out"
+grep -q '^qvm_selection_reason=explicit-cpu$' \
+  "$TMP/vector-cpu.out"
+grep -q '^qvm_operation=bounded-uint32-vector-add$' \
+  "$TMP/vector-cpu.out"
+grep -q '^qvm_gpu_eligible=true$' "$TMP/vector-cpu.out"
+grep -q '^qvm_gpu_execution_attempted=false$' \
+  "$TMP/vector-cpu.out"
+grep -q '^qvm_gpu_execution_completed=false$' \
+  "$TMP/vector-cpu.out"
+grep -q '^qvm_cpu_fallback=false$' "$TMP/vector-cpu.out"
+grep -q '^element_count=256$' "$TMP/vector-cpu.out"
+grep -q '^cpu_reference_validated=true$' "$TMP/vector-cpu.out"
+grep -q '^result_match=true$' "$TMP/vector-cpu.out"
+grep -q '"marker": "QBIT_NOVA_NATIVE_COMPUTE_RECEIPT_V06"' \
+  "$TMP/vector-cpu.json"
+grep -q '"qvm_selected_backend": "cpu"' \
+  "$TMP/vector-cpu.json"
+grep -q '"result_match": true' "$TMP/vector-cpu.json"
+
+"$BIN" run examples/vector_add_u32.qn \
+  --backend auto \
+  --receipt "$TMP/vector-auto.json" \
+  > "$TMP/vector-auto.out"
+grep -q '^qvm_requested_backend=auto$' "$TMP/vector-auto.out"
+grep -q '^qvm_selected_backend=vulkan$' "$TMP/vector-auto.out"
+grep -q '^qvm_selection_reason=verified-v3d-auto$' \
+  "$TMP/vector-auto.out"
+grep -q '^qvm_gpu_eligible=true$' "$TMP/vector-auto.out"
+grep -q '^qvm_gpu_execution_attempted=true$' \
+  "$TMP/vector-auto.out"
+grep -q '^qvm_gpu_execution_completed=true$' \
+  "$TMP/vector-auto.out"
+grep -q '^qvm_cpu_fallback=false$' "$TMP/vector-auto.out"
+grep -q '^hardware_device=V3D ' "$TMP/vector-auto.out"
+grep -q '^hardware_vendor_id=0x14e4$' "$TMP/vector-auto.out"
+grep -q '^cpu_reference_validated=true$' "$TMP/vector-auto.out"
+grep -q '^result_match=true$' "$TMP/vector-auto.out"
+grep -q '"qvm_selected_backend": "vulkan"' \
+  "$TMP/vector-auto.json"
+grep -q '"qvm_gpu_execution_completed": true' \
+  "$TMP/vector-auto.json"
+
+"$BIN" run examples/vector_add_u32.qn \
+  --backend vulkan \
+  --receipt "$TMP/vector-vulkan.json" \
+  > "$TMP/vector-vulkan.out"
+grep -q '^qvm_requested_backend=vulkan$' \
+  "$TMP/vector-vulkan.out"
+grep -q '^qvm_selected_backend=vulkan$' \
+  "$TMP/vector-vulkan.out"
+grep -q '^qvm_selection_reason=explicit-verified-v3d$' \
+  "$TMP/vector-vulkan.out"
+grep -q '^qvm_gpu_execution_completed=true$' \
+  "$TMP/vector-vulkan.out"
+grep -q '^result_match=true$' "$TMP/vector-vulkan.out"
+
+CPU_OUTPUT_SHA="$({
+  sed -n 's/^output_sha256=//p' "$TMP/vector-cpu.out"
+})"
+AUTO_OUTPUT_SHA="$({
+  sed -n 's/^output_sha256=//p' "$TMP/vector-auto.out"
+})"
+VULKAN_OUTPUT_SHA="$({
+  sed -n 's/^output_sha256=//p' "$TMP/vector-vulkan.out"
+})"
+
+test "${#CPU_OUTPUT_SHA}" -eq 64
+test "$CPU_OUTPUT_SHA" = "$AUTO_OUTPUT_SHA"
+test "$CPU_OUTPUT_SHA" = "$VULKAN_OUTPUT_SHA"
+
+"$BIN" exec "$TMP/vector-a.qbc" \
+  --backend auto \
+  --receipt "$TMP/vector-exec-auto.json" \
+  > "$TMP/vector-exec-auto.out"
+grep -q '^qvm_selected_backend=vulkan$' \
+  "$TMP/vector-exec-auto.out"
+grep -q '^qvm_gpu_execution_completed=true$' \
+  "$TMP/vector-exec-auto.out"
+grep -q '^result_match=true$' "$TMP/vector-exec-auto.out"
+
+set +e
+"$BIN" run examples/vector_add_u32.qn \
+  --backend cpu \
+  --shots 2 \
+  --receipt "$TMP/vector-invalid-shots.json" \
+  >"$TMP/vector-invalid-shots.out" \
+  2>"$TMP/vector-invalid-shots.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 4
+grep -q 'QN-E7410' "$TMP/vector-invalid-shots.err"
+test ! -e "$TMP/vector-invalid-shots.json"
+
+for OPTION in --shots --seed
+do
+  set +e
+  "$BIN" run examples/vector_add_u32.qn \
+    --backend cpu \
+    "$OPTION" 0 \
+    >"$TMP/vector-explicit-zero.out" \
+    2>"$TMP/vector-explicit-zero.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -eq 4
+  grep -q 'QN-E7410' "$TMP/vector-explicit-zero.err"
+  test ! -s "$TMP/vector-explicit-zero.out"
+done
+
+for BAD_SOURCE in \
+  tests/bad_gpu_mixed_quantum.qn \
+  tests/bad_gpu_duplicate_operation.qn \
+  tests/bad_gpu_missing_emit.qn \
+  tests/bad_gpu_shots.qn \
+  tests/bad_gpu_extra_capability.qn
+do
+  set +e
+  "$BIN" check "$BAD_SOURCE" \
+    >"$TMP/bad-gpu.out" \
+    2>"$TMP/bad-gpu.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -eq 5
+done
+
+set +e
+"$BIN" check tests/bad_gpu_mixed_quantum.qn \
+  >/dev/null 2>"$TMP/bad-gpu-mixed.err"
+MIXED_STATUS=$?
+"$BIN" check tests/bad_gpu_duplicate_operation.qn \
+  >/dev/null 2>"$TMP/bad-gpu-duplicate.err"
+DUPLICATE_STATUS=$?
+"$BIN" check tests/bad_gpu_missing_emit.qn \
+  >/dev/null 2>"$TMP/bad-gpu-missing-emit.err"
+MISSING_EMIT_STATUS=$?
+"$BIN" check tests/bad_gpu_shots.qn \
+  >/dev/null 2>"$TMP/bad-gpu-shots.err"
+SHOTS_STATUS=$?
+"$BIN" check tests/bad_gpu_extra_capability.qn \
+  >/dev/null 2>"$TMP/bad-gpu-capability.err"
+CAPABILITY_STATUS=$?
+set -e
+
+test "$MIXED_STATUS" -eq 5
+test "$DUPLICATE_STATUS" -eq 5
+test "$MISSING_EMIT_STATUS" -eq 5
+test "$SHOTS_STATUS" -eq 5
+test "$CAPABILITY_STATUS" -eq 5
+grep -q 'QN-E7401' "$TMP/bad-gpu-mixed.err"
+grep -q 'QN-E7402' "$TMP/bad-gpu-duplicate.err"
+grep -q 'QN-E7404' "$TMP/bad-gpu-missing-emit.err"
+grep -q 'QN-E7403' "$TMP/bad-gpu-shots.err"
+grep -q 'QN-E7405' "$TMP/bad-gpu-capability.err"
+
+python3 - "$TMP/vector-a.qbc" "$TMP/vector-tampered.qbc" <<'PY'
+from pathlib import Path
+import sys
+
+source = bytearray(Path(sys.argv[1]).read_bytes())
+source[84:88] = (255).to_bytes(4, "little")
+Path(sys.argv[2]).write_bytes(source)
+PY
+
+set +e
+"$BIN" exec "$TMP/vector-tampered.qbc" \
+  --backend cpu \
+  >"$TMP/vector-tampered.out" \
+  2>"$TMP/vector-tampered.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+grep -q 'QN-E7406' "$TMP/vector-tampered.err"
+test ! -s "$TMP/vector-tampered.out"
+
+echo "BOUNDED_GPU_CPU_V3D_RESULT_MATCH=PASS"
+
 echo "=== OPENSSL ED25519 CSPRNG KEYGEN ==="
 "$BIN" approval keygen-ed25519 \
   --private "$TMP/random-a.key" \
@@ -851,6 +1058,7 @@ echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_BOUNDED_GPU_OPERATION_V06_STEP5"
 echo "PASS: QBIT_NOVA_QVM_GPU_ROUTING_V06_STEP4"
 echo "PASS: QBIT_NOVA_REAL_V3D_COMPUTE_V06_STEP3"
 echo "PASS: QBIT_NOVA_GPU_ADAPTER_CONTRACT_V06_STEP2"

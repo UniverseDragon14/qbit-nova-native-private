@@ -16,6 +16,46 @@ void qn_bytecode_free(QNBytecode *bc) {
     memset(bc, 0, sizeof(*bc));
 }
 
+bool qn_qbc_is_bounded_u32_vector_add(const QNBytecode *bc) {
+    if (!bc ||
+        bc->total_qubits != 0u ||
+        bc->register_count != 0u ||
+        bc->initial_basis != 0u ||
+        bc->default_shots != 1u ||
+        bc->default_seed != 1u ||
+        bc->instruction_count != 3u ||
+        !bc->instructions) {
+        return false;
+    }
+
+    QNCapabilityMask exact_capabilities =
+        QN_CAP_COMPUTE_U32_ADD | QN_CAP_EVIDENCE_EMIT;
+
+    if (bc->capability_mask != exact_capabilities) {
+        return false;
+    }
+
+    const QNInstruction *compute = &bc->instructions[0];
+    const QNInstruction *emit = &bc->instructions[1];
+    const QNInstruction *end = &bc->instructions[2];
+
+    return compute->opcode == OP_U32_VECTOR_ADD &&
+           compute->a == 0u &&
+           compute->b == 0u &&
+           compute->flags == 0u &&
+           compute->imm == QN_U32_VECTOR_ADD_COUNT &&
+           emit->opcode == OP_EMIT &&
+           emit->a == 0u &&
+           emit->b == 0u &&
+           emit->flags == 0u &&
+           emit->imm == 0u &&
+           end->opcode == OP_END &&
+           end->a == 0u &&
+           end->b == 0u &&
+           end->flags == 0u &&
+           end->imm == 0u;
+}
+
 QNStatus qn_compile(const QNProgram *program,
                     const uint8_t source_digest[32],
                     QNBytecode *out,
@@ -146,8 +186,7 @@ QNStatus qn_qbc_decode(const uint8_t *data,
     uint16_t qubits = get16(data + 12);
     uint16_t registers = get16(data + 14);
 
-    if (qubits == 0u ||
-        qubits > QN_MAX_QUBITS ||
+    if (qubits > QN_MAX_QUBITS ||
         registers > QN_MAX_REGISTERS ||
         instruction_count > QN_MAX_INSTRUCTIONS) {
         qn_diag_set(diag, 0, 0, "QBC limits invalid");
@@ -238,6 +277,39 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             return QN_ERR_QBC;
         }
 
+        switch (ins->opcode) {
+            case OP_H:
+            case OP_X:
+            case OP_Z:
+            case OP_CX:
+            case OP_MEASURE_ALL:
+            case OP_EMIT:
+            case OP_U32_VECTOR_ADD:
+            case OP_END:
+                break;
+            default:
+                qn_diag_set(diag, 0, 0,
+                            "unknown QBC opcode 0x%02x", ins->opcode);
+                qn_bytecode_free(out);
+                return QN_ERR_QBC;
+        }
+
+        if (ins->opcode == OP_U32_VECTOR_ADD &&
+            (ins->a != 0u ||
+             ins->b != 0u ||
+             ins->flags != 0u ||
+             ins->imm != QN_U32_VECTOR_ADD_COUNT)) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7406",
+                0,
+                0,
+                "invalid bounded uint32 vector-add bytecode"
+            );
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+
         at += QBC_INSN_SIZE;
     }
 
@@ -258,6 +330,34 @@ QNStatus qn_qbc_decode(const uint8_t *data,
                     break;
             }
         }
+    }
+
+    bool contains_compute_opcode = false;
+    for (size_t i = 0; i < out->instruction_count; ++i) {
+        if (out->instructions[i].opcode == OP_U32_VECTOR_ADD) {
+            contains_compute_opcode = true;
+            break;
+        }
+    }
+
+    if (contains_compute_opcode) {
+        if (version < 3u ||
+            !qn_qbc_is_bounded_u32_vector_add(out)) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7406",
+                0,
+                0,
+                "QBC bounded vector-add contract invalid"
+            );
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+    } else if (out->total_qubits == 0u) {
+        qn_diag_set(diag, 0, 0,
+                    "QBC declares zero qubits without bounded compute operation");
+        qn_bytecode_free(out);
+        return QN_ERR_QBC;
     }
 
     if ((out->capability_mask & ~QN_CAP_KNOWN) != 0u) {

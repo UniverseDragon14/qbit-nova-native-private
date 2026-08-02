@@ -87,6 +87,14 @@ static QNQIRValue result_value(const char *name) {
     return value;
 }
 
+static QNQIRValue u32_vector_value(const char *name) {
+    QNQIRValue value;
+    memset(&value, 0, sizeof(value));
+    value.type = QIR_TYPE_U32_VECTOR;
+    snprintf(value.name, sizeof(value.name), "%s", name);
+    return value;
+}
+
 void qn_qir_free(QNQIRProgram *qir) {
     if (!qir) return;
     free(qir->instructions);
@@ -99,6 +107,7 @@ const char *qn_qir_type_name(QNQIRType type) {
         case QIR_TYPE_QUBIT: return "qbit";
         case QIR_TYPE_QREG: return "qreg";
         case QIR_TYPE_RESULT: return "result";
+        case QIR_TYPE_U32_VECTOR: return "u32vec<256>";
         default: return "invalid";
     }
 }
@@ -111,6 +120,7 @@ const char *qn_qir_opcode_name(QNQIROpcode opcode) {
         case QIR_OP_CX: return "CX";
         case QIR_OP_MEASURE_ALL: return "MEASURE.ALL";
         case QIR_OP_EMIT: return "EMIT";
+        case QIR_OP_U32_VECTOR_ADD: return "U32.VECTOR.ADD";
         default: return "INVALID";
     }
 }
@@ -157,13 +167,56 @@ QNStatus qn_qir_build(const QNProgram *program,
             (uint16_t)(out->total_qubits + reg->width);
     }
 
-    if (out->total_qubits == 0u) {
-        qn_diag_set(diag, 1, 1, "program declares no qbit/qreg");
+    bool has_vector_add = false;
+    bool has_quantum_statement = false;
+
+    for (size_t i = 0; i < program->count; ++i) {
+        switch (program->items[i].kind) {
+            case STMT_QREG:
+            case STMT_H:
+            case STMT_X:
+            case STMT_Z:
+            case STMT_CX:
+            case STMT_GHZ:
+            case STMT_MEASURE:
+                has_quantum_statement = true;
+                break;
+            case STMT_VECTOR_ADD_U32:
+                has_vector_add = true;
+                break;
+            default:
+                break;
+        }
+    }
+
+    if (has_vector_add && has_quantum_statement) {
+        qn_diag_set_code(
+            diag,
+            "QN-E7401",
+            1,
+            1,
+            "bounded vector-add cannot be mixed with quantum statements"
+        );
+        goto fail;
+    }
+
+    if (!has_vector_add && out->total_qubits == 0u) {
+        qn_diag_set(diag, 1, 1,
+                    "program declares no qbit/qreg or bounded compute operation");
+        goto fail;
+    }
+
+    if (has_vector_add && out->total_qubits != 0u) {
+        qn_diag_set_code(diag, "QN-E7401", 1, 1,
+                         "bounded vector-add requires zero quantum registers");
         goto fail;
     }
 
     bool measured = false;
     char measured_name[QN_NAME_CAP] = {0};
+    bool compute_produced = false;
+    bool result_emitted = false;
+    char compute_name[QN_NAME_CAP] = {0};
 
     for (size_t i = 0; i < program->count; ++i) {
         const QNStmt *stmt = &program->items[i];
@@ -308,18 +361,65 @@ QNStatus qn_qir_build(const QNProgram *program,
             }
 
             case STMT_EMIT:
-                if (!measured ||
-                    strcmp(measured_name, stmt->as.emit.name) != 0) {
-                    qn_diag_set(
-                        diag, stmt->line, stmt->column,
-                        "emit must reference the measured result '%s'",
-                        measured ? measured_name : "<none>"
+                if (result_emitted) {
+                    qn_diag_set(diag, stmt->line, stmt->column,
+                                "only one emitted result is allowed");
+                    goto fail;
+                }
+
+                if (has_vector_add) {
+                    if (!compute_produced ||
+                        strcmp(compute_name, stmt->as.emit.name) != 0) {
+                        qn_diag_set(
+                            diag, stmt->line, stmt->column,
+                            "emit must reference bounded compute result '%s'",
+                            compute_produced ? compute_name : "<none>"
+                        );
+                        goto fail;
+                    }
+                    ins.a = u32_vector_value(stmt->as.emit.name);
+                } else {
+                    if (!measured ||
+                        strcmp(measured_name, stmt->as.emit.name) != 0) {
+                        qn_diag_set(
+                            diag, stmt->line, stmt->column,
+                            "emit must reference the measured result '%s'",
+                            measured ? measured_name : "<none>"
+                        );
+                        goto fail;
+                    }
+                    ins.a = result_value(stmt->as.emit.name);
+                }
+
+                out->capability_mask |= QN_CAP_EVIDENCE_EMIT;
+                result_emitted = true;
+                ins.opcode = QIR_OP_EMIT;
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+
+            case STMT_VECTOR_ADD_U32:
+                if (compute_produced) {
+                    qn_diag_set_code(
+                        diag,
+                        "QN-E7402",
+                        stmt->line,
+                        stmt->column,
+                        "only one bounded uint32 vector-add is allowed"
                     );
                     goto fail;
                 }
-                out->capability_mask |= QN_CAP_EVIDENCE_EMIT;
-                ins.opcode = QIR_OP_EMIT;
-                ins.a = result_value(stmt->as.emit.name);
+                compute_produced = true;
+                snprintf(
+                    compute_name,
+                    sizeof(compute_name),
+                    "%s",
+                    stmt->as.vector_add_u32.output
+                );
+                out->capability_mask |= QN_CAP_COMPUTE_U32_ADD;
+                ins.opcode = QIR_OP_U32_VECTOR_ADD;
+                ins.a = u32_vector_value("fixed_input_a");
+                ins.b = u32_vector_value("fixed_input_b");
+                ins.out = u32_vector_value(compute_name);
                 if (!append_qir(out, ins, diag)) goto fail;
                 break;
 
@@ -343,11 +443,23 @@ QNStatus qn_qir_build(const QNProgram *program,
             }
 
             case STMT_SEED:
+                if (has_vector_add) {
+                    qn_diag_set_code(diag, "QN-E7403",
+                                     stmt->line, stmt->column,
+                                     "seed is not valid for bounded vector-add");
+                    goto fail;
+                }
                 out->default_seed =
                     stmt->as.number.value ? stmt->as.number.value : 1u;
                 break;
 
             case STMT_SHOTS:
+                if (has_vector_add) {
+                    qn_diag_set_code(diag, "QN-E7403",
+                                     stmt->line, stmt->column,
+                                     "shots is not valid for bounded vector-add");
+                    goto fail;
+                }
                 if (stmt->as.number.value == 0u ||
                     stmt->as.number.value > QN_MAX_SHOTS) {
                     qn_diag_set(diag, stmt->line, stmt->column,
@@ -365,9 +477,39 @@ QNStatus qn_qir_build(const QNProgram *program,
         }
     }
 
-    if (!measured) {
-        qn_diag_set(diag, 1, 1, "program has no measurement");
-        goto fail;
+    if (has_vector_add) {
+        QNCapabilityMask allowed_compute_capabilities =
+            QN_CAP_COMPUTE_U32_ADD | QN_CAP_EVIDENCE_EMIT;
+        if ((out->capability_mask & ~allowed_compute_capabilities) != 0u) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7405",
+                1,
+                1,
+                "bounded vector-add permits only compute.u32_vector_add and evidence.emit"
+            );
+            goto fail;
+        }
+        if (!compute_produced) {
+            qn_diag_set_code(diag, "QN-E7402", 1, 1,
+                             "program has no bounded vector-add operation");
+            goto fail;
+        }
+        if (!result_emitted) {
+            qn_diag_set_code(diag, "QN-E7404", 1, 1,
+                             "bounded vector-add result must be emitted");
+            goto fail;
+        }
+    } else {
+        if (!measured) {
+            qn_diag_set(diag, 1, 1, "program has no measurement");
+            goto fail;
+        }
+        if (!result_emitted) {
+            qn_diag_set(diag, 1, 1,
+                        "measured result must be emitted");
+            goto fail;
+        }
     }
 
     return QN_OK;
@@ -435,6 +577,10 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
             case QIR_OP_EMIT:
                 dst->opcode = OP_EMIT;
                 break;
+            case QIR_OP_U32_VECTOR_ADD:
+                dst->opcode = OP_U32_VECTOR_ADD;
+                dst->imm = QN_U32_VECTOR_ADD_COUNT;
+                break;
             default:
                 qn_diag_set(diag, src->line, src->column,
                             "cannot lower QIR opcode %d",
@@ -468,6 +614,10 @@ static void dump_value(const QNQIRProgram *qir,
             break;
         case QIR_TYPE_RESULT:
             fprintf(stream, "result %s", value->name);
+            break;
+        case QIR_TYPE_U32_VECTOR:
+            fprintf(stream, "u32vec<%u> %s",
+                    QN_U32_VECTOR_ADD_COUNT, value->name);
             break;
         default:
             fprintf(stream, "none");
@@ -523,6 +673,13 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
                 break;
             case QIR_OP_EMIT:
                 dump_value(qir, &ins->a, stream);
+                break;
+            case QIR_OP_U32_VECTOR_ADD:
+                dump_value(qir, &ins->a, stream);
+                fprintf(stream, ", ");
+                dump_value(qir, &ins->b, stream);
+                fprintf(stream, " -> ");
+                dump_value(qir, &ins->out, stream);
                 break;
             default:
                 fprintf(stream, "invalid");

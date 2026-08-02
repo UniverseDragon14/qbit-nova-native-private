@@ -22,7 +22,8 @@ typedef enum {
     STMT_EMIT,
     STMT_REQUIRES,
     STMT_SEED,
-    STMT_SHOTS
+    STMT_SHOTS,
+    STMT_VECTOR_ADD_U32
 } QNStmtKind;
 
 typedef struct {
@@ -43,6 +44,7 @@ typedef struct {
         struct { char name[QN_NAME_CAP]; } emit;
         struct { char capability[QN_NAME_CAP]; } requires;
         struct { uint64_t value; } number;
+        struct { char output[QN_NAME_CAP]; } vector_add_u32;
     } as;
 } QNStmt;
 

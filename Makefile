@@ -26,6 +26,7 @@ REVOCATION_TEST := build/test_revocation_store
 GPU_ADAPTER_TEST := build/test_gpu_adapter
 GPU_COMPUTE_TEST := build/test_gpu_compute
 GPU_ROUTING_TEST := build/test_gpu_routing
+BOUNDED_GPU_TEST := build/test_bounded_gpu_operation
 
 .PHONY: all clean test check-deps install
 
@@ -94,15 +95,26 @@ $(GPU_COMPUTE_TEST): tests/test_gpu_compute.c \
 
 $(GPU_ROUTING_TEST): tests/test_gpu_routing.c \
                      src/gpu_routing.c src/gpu_adapter.c \
-                     src/util.c | build
+                     src/qbc.c src/qir.c src/guard.c src/util.c | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) \
 		tests/test_gpu_routing.c \
-		src/gpu_routing.c src/gpu_adapter.c src/util.c \
+		src/gpu_routing.c src/gpu_adapter.c \
+		src/qbc.c src/qir.c src/guard.c src/util.c \
+		-o $@ $(LDLIBS)
+
+$(BOUNDED_GPU_TEST): tests/test_bounded_gpu_operation.c \
+                     src/gpu_routing.c src/gpu_adapter.c \
+                     src/qbc.c src/qir.c src/guard.c src/util.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) \
+		tests/test_bounded_gpu_operation.c \
+		src/gpu_routing.c src/gpu_adapter.c \
+		src/qbc.c src/qir.c src/guard.c src/util.c \
 		-o $@ $(LDLIBS)
 
 test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
       $(REPLAY_TEST) $(REVOCATION_TEST) $(GPU_ADAPTER_TEST) \
-      $(GPU_COMPUTE_TEST) $(GPU_ROUTING_TEST)
+      $(GPU_COMPUTE_TEST) $(GPU_ROUTING_TEST) \
+      $(BOUNDED_GPU_TEST)
 	./$(TRUST_TEST)
 	./$(TRUST_FILE_TEST)
 	./$(REPLAY_TEST)
@@ -110,6 +122,7 @@ test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
 	./$(GPU_ADAPTER_TEST)
 	./$(GPU_COMPUTE_TEST)
 	./$(GPU_ROUTING_TEST)
+	./$(BOUNDED_GPU_TEST)
 	bash tests/run_tests.sh
 
 install: check-deps $(BIN)

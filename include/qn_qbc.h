@@ -11,6 +11,7 @@ typedef enum {
     OP_CX = 0x23,
     OP_MEASURE_ALL = 0x30,
     OP_EMIT = 0x40,
+    OP_U32_VECTOR_ADD = 0x50,
     OP_END = 0x7f
 } QNOpcode;
 
@@ -48,5 +49,6 @@ QNStatus qn_qbc_encode(const QNBytecode *bc, uint8_t **data_out, size_t *size_ou
                        QNDiagnostic *diag);
 QNStatus qn_qbc_decode(const uint8_t *data, size_t size, QNBytecode *out,
                        QNDiagnostic *diag);
+bool qn_qbc_is_bounded_u32_vector_add(const QNBytecode *bc);
 
 #endif

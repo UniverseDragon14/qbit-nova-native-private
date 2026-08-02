@@ -1,0 +1,4 @@
+qreg q[1]
+vector_add_u32 -> sum
+measure q -> result
+emit result

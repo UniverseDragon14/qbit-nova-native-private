@@ -1,0 +1,3 @@
+vector_add_u32 -> first
+vector_add_u32 -> second
+emit second
