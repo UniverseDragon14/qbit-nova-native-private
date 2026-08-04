@@ -39,6 +39,10 @@ typedef struct {
     uint32_t compute_hardware_vendor_id;
     uint8_t compute_shader_digest[32];
     uint8_t compute_output_digest[32];
+    bool native_scalar_result;
+    uint16_t scalar_output_id;
+    uint32_t scalar_output_value;
+    uint8_t scalar_output_digest[32];
     QNHistogramEntry *entries;
     size_t entry_count;
     uint8_t qbc_digest[32];

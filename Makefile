@@ -27,6 +27,7 @@ GPU_ADAPTER_TEST := build/test_gpu_adapter
 GPU_COMPUTE_TEST := build/test_gpu_compute
 GPU_ROUTING_TEST := build/test_gpu_routing
 BOUNDED_GPU_TEST := build/test_bounded_gpu_operation
+U32_SCALAR_TEST := build/test_u32_scalar
 
 .PHONY: all clean test check-deps install
 
@@ -111,10 +112,17 @@ $(BOUNDED_GPU_TEST): tests/test_bounded_gpu_operation.c \
 		src/qbc.c src/qir.c src/guard.c src/util.c \
 		-o $@ $(LDLIBS)
 
+$(U32_SCALAR_TEST): tests/test_u32_scalar.c \
+                   src/qbc.c src/qir.c src/guard.c src/util.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) \
+		tests/test_u32_scalar.c \
+		src/qbc.c src/qir.c src/guard.c src/util.c \
+		-o $@ $(LDLIBS)
+
 test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
       $(REPLAY_TEST) $(REVOCATION_TEST) $(GPU_ADAPTER_TEST) \
       $(GPU_COMPUTE_TEST) $(GPU_ROUTING_TEST) \
-      $(BOUNDED_GPU_TEST)
+      $(BOUNDED_GPU_TEST) $(U32_SCALAR_TEST)
 	./$(TRUST_TEST)
 	./$(TRUST_FILE_TEST)
 	./$(REPLAY_TEST)
@@ -123,6 +131,7 @@ test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
 	./$(GPU_COMPUTE_TEST)
 	./$(GPU_ROUTING_TEST)
 	./$(BOUNDED_GPU_TEST)
+	./$(U32_SCALAR_TEST)
 	bash tests/run_tests.sh
 
 install: check-deps $(BIN)

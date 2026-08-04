@@ -1,0 +1,2 @@
+let too_big: u32 = 4294967296
+emit too_big

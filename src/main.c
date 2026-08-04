@@ -536,14 +536,18 @@ static QNStatus preflight_before_replay_consume(
         return status;
     }
 
-    if (qn_qbc_is_bounded_u32_vector_add(bc)) {
+    if (qn_qbc_is_bounded_u32_vector_add(bc) ||
+        qn_qbc_is_u32_scalar_program(bc)) {
         if (shots_explicit || seed_explicit) {
+            bool scalar = qn_qbc_is_u32_scalar_program(bc);
             qn_diag_set_code(
                 diag,
-                "QN-E7410",
+                scalar ? "QN-E7510" : "QN-E7410",
                 0,
                 0,
-                "bounded vector-add does not accept --shots or --seed"
+                scalar
+                    ? "u32 scalar programs do not accept --shots or --seed"
+                    : "bounded vector-add does not accept --shots or --seed"
             );
             return QN_ERR_PARSE;
         }

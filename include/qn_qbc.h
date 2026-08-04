@@ -12,6 +12,9 @@ typedef enum {
     OP_MEASURE_ALL = 0x30,
     OP_EMIT = 0x40,
     OP_U32_VECTOR_ADD = 0x50,
+    OP_U32_CONST = 0x51,
+    OP_U32_ADD = 0x52,
+    OP_U32_EMIT = 0x53,
     OP_END = 0x7f
 } QNOpcode;
 
@@ -32,6 +35,7 @@ typedef struct {
 typedef struct {
     uint16_t total_qubits;
     uint16_t register_count;
+    uint16_t scalar_count;
     uint64_t initial_basis;
     uint32_t default_shots;
     uint64_t default_seed;
@@ -50,5 +54,6 @@ QNStatus qn_qbc_encode(const QNBytecode *bc, uint8_t **data_out, size_t *size_ou
 QNStatus qn_qbc_decode(const uint8_t *data, size_t size, QNBytecode *out,
                        QNDiagnostic *diag);
 bool qn_qbc_is_bounded_u32_vector_add(const QNBytecode *bc);
+bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc);
 
 #endif

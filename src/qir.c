@@ -10,6 +10,35 @@ static int find_reg(const QNQIRProgram *qir, const char *name) {
     return -1;
 }
 
+static int find_scalar(const QNQIRProgram *qir, const char *name) {
+    for (uint16_t i = 0; i < qir->scalar_count; ++i) {
+        if (strcmp(qir->scalars[i].name, name) == 0) return (int)i;
+    }
+    return -1;
+}
+
+static int declare_scalar(QNQIRProgram *qir,
+                          const char *name,
+                          int line,
+                          int column,
+                          QNDiagnostic *diag) {
+    if (find_scalar(qir, name) >= 0) {
+        qn_diag_set_code(diag, "QN-E7501", line, column,
+                         "duplicate u32 variable '%s'", name);
+        return -1;
+    }
+    if (qir->scalar_count >= QN_MAX_U32_SCALARS) {
+        qn_diag_set_code(diag, "QN-E7502", line, column,
+                         "u32 variable limit exceeded (%u)",
+                         QN_MAX_U32_SCALARS);
+        return -1;
+    }
+    uint16_t id = qir->scalar_count++;
+    snprintf(qir->scalars[id].name,
+             sizeof(qir->scalars[id].name), "%s", name);
+    return (int)id;
+}
+
 static bool append_qir(QNQIRProgram *qir,
                        QNQIRInstruction instruction,
                        QNDiagnostic *diag) {
@@ -95,6 +124,17 @@ static QNQIRValue u32_vector_value(const char *name) {
     return value;
 }
 
+static QNQIRValue u32_scalar_value(const QNQIRProgram *qir,
+                                   uint16_t scalar_id) {
+    QNQIRValue value;
+    memset(&value, 0, sizeof(value));
+    value.type = QIR_TYPE_U32;
+    value.register_id = scalar_id;
+    snprintf(value.name, sizeof(value.name), "%s",
+             qir->scalars[scalar_id].name);
+    return value;
+}
+
 void qn_qir_free(QNQIRProgram *qir) {
     if (!qir) return;
     free(qir->instructions);
@@ -108,6 +148,7 @@ const char *qn_qir_type_name(QNQIRType type) {
         case QIR_TYPE_QREG: return "qreg";
         case QIR_TYPE_RESULT: return "result";
         case QIR_TYPE_U32_VECTOR: return "u32vec<256>";
+        case QIR_TYPE_U32: return "u32";
         default: return "invalid";
     }
 }
@@ -121,6 +162,9 @@ const char *qn_qir_opcode_name(QNQIROpcode opcode) {
         case QIR_OP_MEASURE_ALL: return "MEASURE.ALL";
         case QIR_OP_EMIT: return "EMIT";
         case QIR_OP_U32_VECTOR_ADD: return "U32.VECTOR.ADD";
+        case QIR_OP_U32_CONST: return "U32.CONST";
+        case QIR_OP_U32_ADD: return "U32.ADD";
+        case QIR_OP_U32_EMIT: return "U32.EMIT";
         default: return "INVALID";
     }
 }
@@ -143,13 +187,11 @@ QNStatus qn_qir_build(const QNProgram *program,
                         "register limit exceeded");
             goto fail;
         }
-
         if (find_reg(out, stmt->as.qreg.name) >= 0) {
             qn_diag_set(diag, stmt->line, stmt->column,
                         "duplicate register '%s'", stmt->as.qreg.name);
             goto fail;
         }
-
         if ((uint32_t)out->total_qubits + stmt->as.qreg.width >
             QN_MAX_QUBITS) {
             qn_diag_set(diag, stmt->line, stmt->column,
@@ -161,13 +203,12 @@ QNStatus qn_qir_build(const QNProgram *program,
         snprintf(reg->name, sizeof(reg->name), "%s", stmt->as.qreg.name);
         reg->base = out->total_qubits;
         reg->width = (uint16_t)stmt->as.qreg.width;
-
         out->initial_basis |= stmt->as.qreg.initial_basis << reg->base;
-        out->total_qubits =
-            (uint16_t)(out->total_qubits + reg->width);
+        out->total_qubits = (uint16_t)(out->total_qubits + reg->width);
     }
 
     bool has_vector_add = false;
+    bool has_scalar_statement = false;
     bool has_quantum_statement = false;
 
     for (size_t i = 0; i < program->count; ++i) {
@@ -184,12 +225,20 @@ QNStatus qn_qir_build(const QNProgram *program,
             case STMT_VECTOR_ADD_U32:
                 has_vector_add = true;
                 break;
+            case STMT_U32_LET:
+            case STMT_U32_ADD:
+                has_scalar_statement = true;
+                break;
             default:
                 break;
         }
     }
 
-    if (has_vector_add && has_quantum_statement) {
+    unsigned modes = (has_quantum_statement ? 1u : 0u) +
+                     (has_vector_add ? 1u : 0u) +
+                     (has_scalar_statement ? 1u : 0u);
+    if (has_quantum_statement && has_vector_add &&
+        !has_scalar_statement) {
         qn_diag_set_code(
             diag,
             "QN-E7401",
@@ -199,16 +248,19 @@ QNStatus qn_qir_build(const QNProgram *program,
         );
         goto fail;
     }
-
-    if (!has_vector_add && out->total_qubits == 0u) {
-        qn_diag_set(diag, 1, 1,
-                    "program declares no qbit/qreg or bounded compute operation");
+    if (modes > 1u) {
+        qn_diag_set_code(diag, "QN-E7503", 1, 1,
+                         "quantum, bounded vector and u32 scalar statements cannot be mixed");
         goto fail;
     }
-
-    if (has_vector_add && out->total_qubits != 0u) {
-        qn_diag_set_code(diag, "QN-E7401", 1, 1,
-                         "bounded vector-add requires zero quantum registers");
+    if (modes == 0u) {
+        qn_diag_set(diag, 1, 1,
+                    "program declares no quantum or native compute operation");
+        goto fail;
+    }
+    if ((has_vector_add || has_scalar_statement) && out->total_qubits != 0u) {
+        qn_diag_set_code(diag, "QN-E7503", 1, 1,
+                         "native compute programs require zero quantum registers");
         goto fail;
     }
 
@@ -237,13 +289,10 @@ QNStatus qn_qir_build(const QNProgram *program,
                                 "gate after measurement is not allowed");
                     goto fail;
                 }
-                ins.opcode =
-                    stmt->kind == STMT_H ? QIR_OP_H :
-                    stmt->kind == STMT_X ? QIR_OP_X : QIR_OP_Z;
-                if (!resolve_target(out, &stmt->as.unary.target,
-                                    &ins.a, diag)) {
+                ins.opcode = stmt->kind == STMT_H ? QIR_OP_H :
+                             (stmt->kind == STMT_X ? QIR_OP_X : QIR_OP_Z);
+                if (!resolve_target(out, &stmt->as.unary.target, &ins.a, diag))
                     goto fail;
-                }
                 out->capability_mask |= QN_CAP_QUANTUM_SIMULATE;
                 if (!append_qir(out, ins, diag)) goto fail;
                 break;
@@ -255,12 +304,9 @@ QNStatus qn_qir_build(const QNProgram *program,
                     goto fail;
                 }
                 ins.opcode = QIR_OP_CX;
-                if (!resolve_target(out, &stmt->as.cx.control,
-                                    &ins.a, diag) ||
-                    !resolve_target(out, &stmt->as.cx.target,
-                                    &ins.b, diag)) {
+                if (!resolve_target(out, &stmt->as.cx.control, &ins.a, diag) ||
+                    !resolve_target(out, &stmt->as.cx.target, &ins.b, diag))
                     goto fail;
-                }
                 if (ins.a.register_id == ins.b.register_id &&
                     ins.a.qubit_index == ins.b.qubit_index) {
                     qn_diag_set(diag, stmt->line, stmt->column,
@@ -277,47 +323,36 @@ QNStatus qn_qir_build(const QNProgram *program,
                                 "ghz after measurement is not allowed");
                     goto fail;
                 }
-
                 int reg_id = find_reg(out, stmt->as.ghz.reg);
                 if (reg_id < 0) {
                     qn_diag_set(diag, stmt->line, stmt->column,
-                                "unknown register '%s'",
-                                stmt->as.ghz.reg);
+                                "unknown register '%s'", stmt->as.ghz.reg);
                     goto fail;
                 }
-
                 const QNRegisterInfo *reg = &out->registers[reg_id];
                 if (reg->width < 2u) {
                     qn_diag_set(diag, stmt->line, stmt->column,
                                 "ghz requires at least 2 qubits");
                     goto fail;
                 }
-
                 out->capability_mask |= QN_CAP_QUANTUM_SIMULATE;
                 ins.opcode = QIR_OP_H;
-                ins.a = (QNQIRValue){
-                    .type = QIR_TYPE_QUBIT,
-                    .register_id = (uint16_t)reg_id,
-                    .qubit_index = 0u
-                };
+                ins.a = (QNQIRValue){.type=QIR_TYPE_QUBIT,
+                                     .register_id=(uint16_t)reg_id,
+                                     .qubit_index=0u};
                 snprintf(ins.a.name, sizeof(ins.a.name), "%s", reg->name);
                 if (!append_qir(out, ins, diag)) goto fail;
-
                 for (uint16_t q = 1u; q < reg->width; ++q) {
                     memset(&ins, 0, sizeof(ins));
                     ins.opcode = QIR_OP_CX;
                     ins.line = stmt->line;
                     ins.column = stmt->column;
-                    ins.a = (QNQIRValue){
-                        .type = QIR_TYPE_QUBIT,
-                        .register_id = (uint16_t)reg_id,
-                        .qubit_index = 0u
-                    };
-                    ins.b = (QNQIRValue){
-                        .type = QIR_TYPE_QUBIT,
-                        .register_id = (uint16_t)reg_id,
-                        .qubit_index = q
-                    };
+                    ins.a = (QNQIRValue){.type=QIR_TYPE_QUBIT,
+                                         .register_id=(uint16_t)reg_id,
+                                         .qubit_index=0u};
+                    ins.b = (QNQIRValue){.type=QIR_TYPE_QUBIT,
+                                         .register_id=(uint16_t)reg_id,
+                                         .qubit_index=q};
                     snprintf(ins.a.name, sizeof(ins.a.name), "%s", reg->name);
                     snprintf(ins.b.name, sizeof(ins.b.name), "%s", reg->name);
                     if (!append_qir(out, ins, diag)) goto fail;
@@ -331,24 +366,18 @@ QNStatus qn_qir_build(const QNProgram *program,
                                 "only one measurement block is allowed in v0.2");
                     goto fail;
                 }
-
                 int reg_id = find_reg(out, stmt->as.measure.reg);
                 if (reg_id < 0) {
                     qn_diag_set(diag, stmt->line, stmt->column,
-                                "unknown register '%s'",
-                                stmt->as.measure.reg);
+                                "unknown register '%s'", stmt->as.measure.reg);
                     goto fail;
                 }
-
                 const QNRegisterInfo *reg = &out->registers[reg_id];
                 if (reg->base != 0u || reg->width != out->total_qubits) {
-                    qn_diag_set(
-                        diag, stmt->line, stmt->column,
-                        "v0.2 measure must target the single full register"
-                    );
+                    qn_diag_set(diag, stmt->line, stmt->column,
+                                "v0.2 measure must target the single full register");
                     goto fail;
                 }
-
                 out->capability_mask |= QN_CAP_QUANTUM_SIMULATE;
                 measured = true;
                 snprintf(measured_name, sizeof(measured_name), "%s",
@@ -360,61 +389,99 @@ QNStatus qn_qir_build(const QNProgram *program,
                 break;
             }
 
+            case STMT_U32_LET: {
+                int id = declare_scalar(out, stmt->as.u32_let.name,
+                                        stmt->line, stmt->column, diag);
+                if (id < 0) goto fail;
+                out->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
+                ins.opcode = QIR_OP_U32_CONST;
+                ins.out = u32_scalar_value(out, (uint16_t)id);
+                ins.imm = stmt->as.u32_let.value;
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+            }
+
+            case STMT_U32_ADD: {
+                if (find_scalar(out, stmt->as.u32_add.output) >= 0) {
+                    qn_diag_set_code(diag, "QN-E7501", stmt->line, stmt->column,
+                                     "duplicate u32 variable '%s'",
+                                     stmt->as.u32_add.output);
+                    goto fail;
+                }
+                int left = find_scalar(out, stmt->as.u32_add.left);
+                int right = find_scalar(out, stmt->as.u32_add.right);
+                if (left < 0 || right < 0) {
+                    qn_diag_set_code(diag, "QN-E7504", stmt->line, stmt->column,
+                                     "unknown or uninitialized u32 variable in '%s = %s + %s'",
+                                     stmt->as.u32_add.output,
+                                     stmt->as.u32_add.left,
+                                     stmt->as.u32_add.right);
+                    goto fail;
+                }
+                int output_id = declare_scalar(out, stmt->as.u32_add.output,
+                                               stmt->line, stmt->column, diag);
+                if (output_id < 0) goto fail;
+                out->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
+                ins.opcode = QIR_OP_U32_ADD;
+                ins.a = u32_scalar_value(out, (uint16_t)left);
+                ins.b = u32_scalar_value(out, (uint16_t)right);
+                ins.out = u32_scalar_value(out, (uint16_t)output_id);
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+            }
+
             case STMT_EMIT:
                 if (result_emitted) {
                     qn_diag_set(diag, stmt->line, stmt->column,
                                 "only one emitted result is allowed");
                     goto fail;
                 }
-
-                if (has_vector_add) {
-                    if (!compute_produced ||
-                        strcmp(compute_name, stmt->as.emit.name) != 0) {
-                        qn_diag_set(
-                            diag, stmt->line, stmt->column,
-                            "emit must reference bounded compute result '%s'",
-                            compute_produced ? compute_name : "<none>"
-                        );
+                if (has_scalar_statement) {
+                    int id = find_scalar(out, stmt->as.emit.name);
+                    if (id < 0) {
+                        qn_diag_set_code(diag, "QN-E7504",
+                                         stmt->line, stmt->column,
+                                         "emit references unknown u32 variable '%s'",
+                                         stmt->as.emit.name);
                         goto fail;
                     }
+                    ins.opcode = QIR_OP_U32_EMIT;
+                    ins.a = u32_scalar_value(out, (uint16_t)id);
+                } else if (has_vector_add) {
+                    if (!compute_produced ||
+                        strcmp(compute_name, stmt->as.emit.name) != 0) {
+                        qn_diag_set(diag, stmt->line, stmt->column,
+                                    "emit must reference bounded compute result '%s'",
+                                    compute_produced ? compute_name : "<none>");
+                        goto fail;
+                    }
+                    ins.opcode = QIR_OP_EMIT;
                     ins.a = u32_vector_value(stmt->as.emit.name);
                 } else {
                     if (!measured ||
                         strcmp(measured_name, stmt->as.emit.name) != 0) {
-                        qn_diag_set(
-                            diag, stmt->line, stmt->column,
-                            "emit must reference the measured result '%s'",
-                            measured ? measured_name : "<none>"
-                        );
+                        qn_diag_set(diag, stmt->line, stmt->column,
+                                    "emit must reference the measured result '%s'",
+                                    measured ? measured_name : "<none>");
                         goto fail;
                     }
+                    ins.opcode = QIR_OP_EMIT;
                     ins.a = result_value(stmt->as.emit.name);
                 }
-
                 out->capability_mask |= QN_CAP_EVIDENCE_EMIT;
                 result_emitted = true;
-                ins.opcode = QIR_OP_EMIT;
                 if (!append_qir(out, ins, diag)) goto fail;
                 break;
 
             case STMT_VECTOR_ADD_U32:
                 if (compute_produced) {
-                    qn_diag_set_code(
-                        diag,
-                        "QN-E7402",
-                        stmt->line,
-                        stmt->column,
-                        "only one bounded uint32 vector-add is allowed"
-                    );
+                    qn_diag_set_code(diag, "QN-E7402", stmt->line, stmt->column,
+                                     "only one bounded uint32 vector-add is allowed");
                     goto fail;
                 }
                 compute_produced = true;
-                snprintf(
-                    compute_name,
-                    sizeof(compute_name),
-                    "%s",
-                    stmt->as.vector_add_u32.output
-                );
+                snprintf(compute_name, sizeof(compute_name), "%s",
+                         stmt->as.vector_add_u32.output);
                 out->capability_mask |= QN_CAP_COMPUTE_U32_ADD;
                 ins.opcode = QIR_OP_U32_VECTOR_ADD;
                 ins.a = u32_vector_value("fixed_input_a");
@@ -425,17 +492,12 @@ QNStatus qn_qir_build(const QNProgram *program,
 
             case STMT_REQUIRES: {
                 QNCapabilityMask capability = 0;
-                if (!qn_capability_parse(
-                        stmt->as.requires.capability,
-                        &capability)) {
-                    qn_diag_set_code(
-                        diag,
-                        "QN-E-CAP-DECL-001",
-                        stmt->line,
-                        stmt->column,
-                        "unknown capability declaration '%s'",
-                        stmt->as.requires.capability
-                    );
+                if (!qn_capability_parse(stmt->as.requires.capability,
+                                         &capability)) {
+                    qn_diag_set_code(diag, "QN-E-CAP-DECL-001",
+                                     stmt->line, stmt->column,
+                                     "unknown capability declaration '%s'",
+                                     stmt->as.requires.capability);
                     goto fail;
                 }
                 out->capability_mask |= capability;
@@ -443,21 +505,23 @@ QNStatus qn_qir_build(const QNProgram *program,
             }
 
             case STMT_SEED:
-                if (has_vector_add) {
-                    qn_diag_set_code(diag, "QN-E7403",
+                if (has_vector_add || has_scalar_statement) {
+                    qn_diag_set_code(diag,
+                                     has_scalar_statement ? "QN-E7505" : "QN-E7403",
                                      stmt->line, stmt->column,
-                                     "seed is not valid for bounded vector-add");
+                                     "seed is not valid for native deterministic compute");
                     goto fail;
                 }
-                out->default_seed =
-                    stmt->as.number.value ? stmt->as.number.value : 1u;
+                out->default_seed = stmt->as.number.value
+                    ? stmt->as.number.value : 1u;
                 break;
 
             case STMT_SHOTS:
-                if (has_vector_add) {
-                    qn_diag_set_code(diag, "QN-E7403",
+                if (has_vector_add || has_scalar_statement) {
+                    qn_diag_set_code(diag,
+                                     has_scalar_statement ? "QN-E7505" : "QN-E7403",
                                      stmt->line, stmt->column,
-                                     "shots is not valid for bounded vector-add");
+                                     "shots is not valid for native deterministic compute");
                     goto fail;
                 }
                 if (stmt->as.number.value == 0u ||
@@ -466,8 +530,7 @@ QNStatus qn_qir_build(const QNProgram *program,
                                 "shots must be 1..%u", QN_MAX_SHOTS);
                     goto fail;
                 }
-                out->default_shots =
-                    (uint32_t)stmt->as.number.value;
+                out->default_shots = (uint32_t)stmt->as.number.value;
                 break;
 
             default:
@@ -477,17 +540,30 @@ QNStatus qn_qir_build(const QNProgram *program,
         }
     }
 
-    if (has_vector_add) {
-        QNCapabilityMask allowed_compute_capabilities =
+    if (has_scalar_statement) {
+        QNCapabilityMask allowed =
+            QN_CAP_COMPUTE_U32_SCALAR | QN_CAP_EVIDENCE_EMIT;
+        if ((out->capability_mask & ~allowed) != 0u) {
+            qn_diag_set_code(diag, "QN-E7506", 1, 1,
+                             "u32 scalar programs permit only compute.u32_scalar and evidence.emit");
+            goto fail;
+        }
+        if (out->scalar_count == 0u) {
+            qn_diag_set_code(diag, "QN-E7507", 1, 1,
+                             "u32 scalar program declares no variables");
+            goto fail;
+        }
+        if (!result_emitted) {
+            qn_diag_set_code(diag, "QN-E7508", 1, 1,
+                             "u32 scalar result must be emitted");
+            goto fail;
+        }
+    } else if (has_vector_add) {
+        QNCapabilityMask allowed =
             QN_CAP_COMPUTE_U32_ADD | QN_CAP_EVIDENCE_EMIT;
-        if ((out->capability_mask & ~allowed_compute_capabilities) != 0u) {
-            qn_diag_set_code(
-                diag,
-                "QN-E7405",
-                1,
-                1,
-                "bounded vector-add permits only compute.u32_vector_add and evidence.emit"
-            );
+        if ((out->capability_mask & ~allowed) != 0u) {
+            qn_diag_set_code(diag, "QN-E7405", 1, 1,
+                             "bounded vector-add permits only compute.u32_vector_add and evidence.emit");
             goto fail;
         }
         if (!compute_produced) {
@@ -506,8 +582,7 @@ QNStatus qn_qir_build(const QNProgram *program,
             goto fail;
         }
         if (!result_emitted) {
-            qn_diag_set(diag, 1, 1,
-                        "measured result must be emitted");
+            qn_diag_set(diag, 1, 1, "measured result must be emitted");
             goto fail;
         }
     }
@@ -531,6 +606,7 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
     memset(out, 0, sizeof(*out));
     out->total_qubits = qir->total_qubits;
     out->register_count = qir->register_count;
+    out->scalar_count = qir->scalar_count;
     out->initial_basis = qir->initial_basis;
     out->default_shots = qir->default_shots;
     out->default_seed = qir->default_seed;
@@ -581,6 +657,21 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
                 dst->opcode = OP_U32_VECTOR_ADD;
                 dst->imm = QN_U32_VECTOR_ADD_COUNT;
                 break;
+            case QIR_OP_U32_CONST:
+                dst->opcode = OP_U32_CONST;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->imm = src->imm;
+                break;
+            case QIR_OP_U32_ADD:
+                dst->opcode = OP_U32_ADD;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->b = (uint8_t)src->a.register_id;
+                dst->flags = (uint8_t)src->b.register_id;
+                break;
+            case QIR_OP_U32_EMIT:
+                dst->opcode = OP_U32_EMIT;
+                dst->a = (uint8_t)src->a.register_id;
+                break;
             default:
                 qn_diag_set(diag, src->line, src->column,
                             "cannot lower QIR opcode %d",
@@ -619,6 +710,10 @@ static void dump_value(const QNQIRProgram *qir,
             fprintf(stream, "u32vec<%u> %s",
                     QN_U32_VECTOR_ADD_COUNT, value->name);
             break;
+        case QIR_TYPE_U32:
+            fprintf(stream, "u32 %s@%u", value->name,
+                    value->register_id);
+            break;
         default:
             fprintf(stream, "none");
             break;
@@ -632,6 +727,7 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
     fprintf(stream, "QBIT_NOVA_TYPED_QIR_V02\n");
     fprintf(stream, "qubits=%u\n", qir->total_qubits);
     fprintf(stream, "registers=%u\n", qir->register_count);
+    fprintf(stream, "u32_scalars=%u\n", qir->scalar_count);
     fprintf(stream, "shots=%u\n", qir->default_shots);
     fprintf(stream, "seed=%llu\n",
             (unsigned long long)qir->default_seed);
@@ -680,6 +776,20 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
                 dump_value(qir, &ins->b, stream);
                 fprintf(stream, " -> ");
                 dump_value(qir, &ins->out, stream);
+                break;
+            case QIR_OP_U32_CONST:
+                fprintf(stream, "%u -> ", ins->imm);
+                dump_value(qir, &ins->out, stream);
+                break;
+            case QIR_OP_U32_ADD:
+                dump_value(qir, &ins->a, stream);
+                fprintf(stream, ", ");
+                dump_value(qir, &ins->b, stream);
+                fprintf(stream, " -> ");
+                dump_value(qir, &ins->out, stream);
+                break;
+            case QIR_OP_U32_EMIT:
+                dump_value(qir, &ins->a, stream);
                 break;
             default:
                 fprintf(stream, "invalid");

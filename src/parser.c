@@ -201,6 +201,36 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             const QNToken *n = expect(&p, TOK_INT, "integer");
             if (!n) goto fail;
             s.as.number.value = n->int_value;
+        } else if (match(&p, TOK_LET)) {
+            s.kind = STMT_U32_LET;
+            const QNToken *name = expect(&p, TOK_IDENT, "variable name");
+            if (!name || !expect(&p, TOK_COLON, "':'") ||
+                !expect(&p, TOK_U32, "u32") ||
+                !expect(&p, TOK_EQUAL, "'='")) goto fail;
+            const QNToken *value = expect(&p, TOK_INT, "u32 literal");
+            if (!value) goto fail;
+            if (value->int_value > UINT32_MAX) {
+                qn_diag_set_code(diag, "QN-E7500", value->line, value->column,
+                                 "u32 literal exceeds 4294967295");
+                goto fail;
+            }
+            snprintf(s.as.u32_let.name, sizeof(s.as.u32_let.name),
+                     "%s", name->text);
+            s.as.u32_let.value = (uint32_t)value->int_value;
+        } else if (is(&p, TOK_IDENT)) {
+            const QNToken *output = expect(&p, TOK_IDENT, "output variable");
+            s.kind = STMT_U32_ADD;
+            if (!expect(&p, TOK_EQUAL, "'='") ) goto fail;
+            const QNToken *left = expect(&p, TOK_IDENT, "left variable");
+            if (!left || !expect(&p, TOK_PLUS, "'+'")) goto fail;
+            const QNToken *right = expect(&p, TOK_IDENT, "right variable");
+            if (!right) goto fail;
+            snprintf(s.as.u32_add.output, sizeof(s.as.u32_add.output),
+                     "%s", output->text);
+            snprintf(s.as.u32_add.left, sizeof(s.as.u32_add.left),
+                     "%s", left->text);
+            snprintf(s.as.u32_add.right, sizeof(s.as.u32_add.right),
+                     "%s", right->text);
         } else if (match(&p, TOK_VECTOR_ADD_U32)) {
             s.kind = STMT_VECTOR_ADD_U32;
             if (!expect(&p, TOK_ARROW, "'->'")) goto fail;

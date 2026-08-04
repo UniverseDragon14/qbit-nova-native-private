@@ -158,15 +158,18 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
         );
     }
 
+    bool scalar_program = qn_qbc_is_u32_scalar_program(bc);
     qn_gpu_route_set_text(
         out->operation,
         sizeof(out->operation),
-        "quantum-state-simulation"
+        scalar_program ? "u32-scalar-program" :
+                         "quantum-state-simulation"
     );
 
     /*
-     * Quantum-state simulation remains CPU-only. The fixed uint32
-     * vector-add shader is not a quantum kernel and is never used as one.
+     * Quantum-state simulation and scalar language execution remain
+     * CPU-only. The fixed uint32 vector-add shader is never reused for
+     * a different operation.
      */
     out->gpu_eligible = false;
     out->gpu_execution_attempted = false;
@@ -198,7 +201,9 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
             qn_gpu_route_set_text(
                 out->selection_reason,
                 sizeof(out->selection_reason),
-                "qvm-operation-not-gpu-eligible"
+                scalar_program
+                    ? "scalar-operation-not-gpu-eligible"
+                    : "qvm-operation-not-gpu-eligible"
             );
             out->cpu_fallback = true;
             return QN_OK;

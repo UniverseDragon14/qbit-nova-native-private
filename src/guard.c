@@ -12,6 +12,7 @@ static const CapabilityName CAPABILITIES[] = {
     { QN_CAP_QUANTUM_SIMULATE, "quantum.simulate" },
     { QN_CAP_EVIDENCE_EMIT,    "evidence.emit" },
     { QN_CAP_COMPUTE_U32_ADD,  "compute.u32_vector_add" },
+    { QN_CAP_COMPUTE_U32_SCALAR, "compute.u32_scalar" },
     { QN_CAP_MODEL_EXEC,       "model.exec" },
     { QN_CAP_FILE_WRITE,       "file.write" },
     { QN_CAP_NETWORK,          "network" },

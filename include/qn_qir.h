@@ -9,7 +9,8 @@ typedef enum {
     QIR_TYPE_QUBIT,
     QIR_TYPE_QREG,
     QIR_TYPE_RESULT,
-    QIR_TYPE_U32_VECTOR
+    QIR_TYPE_U32_VECTOR,
+    QIR_TYPE_U32
 } QNQIRType;
 
 typedef enum {
@@ -19,7 +20,10 @@ typedef enum {
     QIR_OP_CX,
     QIR_OP_MEASURE_ALL,
     QIR_OP_EMIT,
-    QIR_OP_U32_VECTOR_ADD
+    QIR_OP_U32_VECTOR_ADD,
+    QIR_OP_U32_CONST,
+    QIR_OP_U32_ADD,
+    QIR_OP_U32_EMIT
 } QNQIROpcode;
 
 typedef struct {
@@ -30,23 +34,30 @@ typedef struct {
 } QNQIRValue;
 
 typedef struct {
+    char name[QN_NAME_CAP];
+} QNU32ScalarInfo;
+
+typedef struct {
     QNQIROpcode opcode;
     int line;
     int column;
     QNQIRValue a;
     QNQIRValue b;
     QNQIRValue out;
+    uint32_t imm;
 } QNQIRInstruction;
 
 typedef struct {
     uint16_t total_qubits;
     uint16_t register_count;
+    uint16_t scalar_count;
     uint64_t initial_basis;
     uint32_t default_shots;
     uint64_t default_seed;
     QNCapabilityMask capability_mask;
     uint8_t source_digest[32];
     QNRegisterInfo registers[QN_MAX_REGISTERS];
+    QNU32ScalarInfo scalars[QN_MAX_U32_SCALARS];
     QNQIRInstruction *instructions;
     size_t instruction_count;
 } QNQIRProgram;

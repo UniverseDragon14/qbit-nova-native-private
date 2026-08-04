@@ -10,10 +10,13 @@ typedef enum {
     TOK_INT,
     TOK_STATE,
     TOK_ASSIGN,
+    TOK_EQUAL,
     TOK_ARROW,
     TOK_LBRACKET,
     TOK_RBRACKET,
     TOK_DOT,
+    TOK_COLON,
+    TOK_PLUS,
 
     TOK_QBIT,
     TOK_QREG,
@@ -27,7 +30,9 @@ typedef enum {
     TOK_REQUIRES,
     TOK_SEED,
     TOK_SHOTS,
-    TOK_VECTOR_ADD_U32
+    TOK_VECTOR_ADD_U32,
+    TOK_LET,
+    TOK_U32
 } QNTokenKind;
 
 typedef struct {

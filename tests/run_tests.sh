@@ -1053,11 +1053,98 @@ if grep -Eq '^\|001>=|^\|010>=|^\|011>=|^\|100>=|^\|101>=|^\|110>=' \
   exit 1
 fi
 
+echo "=== TYPED U32 SCALAR LANGUAGE CORE ==="
+"$BIN" check examples/u32_scalar.qn > "$TMP/u32-check.out"
+grep -q 'PASS: QBIT_NOVA_NATIVE_CHECK_V01' "$TMP/u32-check.out"
+grep -q '^qubits=0$' "$TMP/u32-check.out"
+grep -q '^instructions=5$' "$TMP/u32-check.out"
+
+"$BIN" qir examples/u32_scalar.qn > "$TMP/u32-qir.out"
+grep -q '^u32_scalars=3$' "$TMP/u32-qir.out"
+grep -q 'U32.CONST.*10.*u32 a@0' "$TMP/u32-qir.out"
+grep -q 'U32.CONST.*20.*u32 b@1' "$TMP/u32-qir.out"
+grep -q 'U32.ADD.*u32 a@0.*u32 b@1.*u32 sum@2' "$TMP/u32-qir.out"
+grep -q 'U32.EMIT.*u32 sum@2' "$TMP/u32-qir.out"
+
+"$BIN" build examples/u32_scalar.qn -o "$TMP/u32-a.qbc" >/dev/null
+"$BIN" build examples/u32_scalar.qn -o "$TMP/u32-b.qbc" >/dev/null
+cmp "$TMP/u32-a.qbc" "$TMP/u32-b.qbc"
+test "$(stat -c '%s' "$TMP/u32-a.qbc")" -eq 120
+test "$(od -An -tu1 -j 4 -N 1 "$TMP/u32-a.qbc" | tr -d '[:space:]')" = 4
+test "$(od -An -tu1 -j 76 -N 1 "$TMP/u32-a.qbc" | tr -d '[:space:]')" = 3
+
+"$BIN" run examples/u32_scalar.qn \
+  --backend cpu --receipt "$TMP/u32-cpu.json" > "$TMP/u32-cpu.out"
+grep -q '^QBIT_NOVA_NATIVE_SCALAR_RUN_V07$' "$TMP/u32-cpu.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/u32-cpu.out"
+grep -q '^qvm_cpu_fallback=false$' "$TMP/u32-cpu.out"
+grep -q '^emitted_u32=30$' "$TMP/u32-cpu.out"
+grep -q '"marker": "QBIT_NOVA_NATIVE_SCALAR_RECEIPT_V07"' "$TMP/u32-cpu.json"
+grep -q '"emitted_u32": 30' "$TMP/u32-cpu.json"
+
+"$BIN" exec "$TMP/u32-a.qbc" --backend auto > "$TMP/u32-auto.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/u32-auto.out"
+grep -q '^qvm_selection_reason=scalar-operation-not-gpu-eligible$' "$TMP/u32-auto.out"
+grep -q '^qvm_cpu_fallback=true$' "$TMP/u32-auto.out"
+grep -q '^emitted_u32=30$' "$TMP/u32-auto.out"
+
+"$BIN" run tests/u32_scalar_overflow.qn --backend cpu \
+  > "$TMP/u32-overflow.out"
+grep -q '^emitted_u32=0$' "$TMP/u32-overflow.out"
+
+for CASE in \
+  bad_u32_duplicate \
+  bad_u32_unknown \
+  bad_u32_missing_emit \
+  bad_u32_mixed_quantum \
+  bad_u32_literal_overflow \
+  bad_u32_shots
+do
+  set +e
+  "$BIN" check "tests/${CASE}.qn" \
+    >"$TMP/${CASE}.out" 2>"$TMP/${CASE}.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -ne 0
+  test ! -s "$TMP/${CASE}.out"
+done
+
+grep -q 'QN-E7501' "$TMP/bad_u32_duplicate.err"
+grep -q 'QN-E7504' "$TMP/bad_u32_unknown.err"
+grep -q 'QN-E7508' "$TMP/bad_u32_missing_emit.err"
+grep -q 'QN-E7503' "$TMP/bad_u32_mixed_quantum.err"
+grep -q 'QN-E7500' "$TMP/bad_u32_literal_overflow.err"
+grep -q 'QN-E7505' "$TMP/bad_u32_shots.err"
+
+for OPTION in --shots --seed
+do
+  set +e
+  "$BIN" run examples/u32_scalar.qn --backend cpu "$OPTION" 1 \
+    >"$TMP/u32-option.out" 2>"$TMP/u32-option.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -eq 4
+  grep -q 'QN-E7510' "$TMP/u32-option.err"
+  test ! -s "$TMP/u32-option.out"
+done
+
+set +e
+"$BIN" run examples/u32_scalar.qn --backend vulkan \
+  >"$TMP/u32-vulkan.out" 2>"$TMP/u32-vulkan.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E7201' "$TMP/u32-vulkan.err"
+test ! -s "$TMP/u32-vulkan.out"
+
+echo "TYPED_U32_SCALAR_PIPELINE=PASS"
+
 echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/a.qbc" >/dev/null
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_TYPED_U32_SCALAR_V07_STEP1"
 echo "PASS: QBIT_NOVA_BOUNDED_GPU_OPERATION_V06_STEP5"
 echo "PASS: QBIT_NOVA_QVM_GPU_ROUTING_V06_STEP4"
 echo "PASS: QBIT_NOVA_REAL_V3D_COMPUTE_V06_STEP3"

@@ -273,6 +273,93 @@ static QNStatus qn_vm_run_bounded_compute(
     return QN_OK;
 }
 
+static QNStatus qn_vm_run_u32_scalar(
+    const QNBytecode *bc,
+    uint32_t shots,
+    uint64_t seed,
+    const QNGpuQvmRoute *route,
+    QNRunResult *out,
+    QNDiagnostic *diag
+) {
+    if (shots != 0u || seed != 0u) {
+        qn_diag_set_code(diag, "QN-E7510", 0, 0,
+                         "u32 scalar programs do not accept --shots or --seed");
+        return QN_ERR_PARSE;
+    }
+    if (strcmp(route->selected_backend, "cpu") != 0) {
+        qn_diag_set_code(diag, "QN-E7511", 0, 0,
+                         "u32 scalar execution requires CPU route");
+        return QN_ERR_RUNTIME;
+    }
+    if (!qn_qbc_is_u32_scalar_program(bc)) {
+        qn_diag_set_code(diag, "QN-E7512", 0, 0,
+                         "invalid u32 scalar bytecode contract");
+        return QN_ERR_QBC;
+    }
+
+    uint32_t values[QN_MAX_U32_SCALARS] = {0};
+    bool initialized[QN_MAX_U32_SCALARS] = {false};
+    bool emitted = false;
+    uint16_t emitted_id = 0u;
+
+    for (size_t i = 0; i < bc->instruction_count; ++i) {
+        const QNInstruction *ins = &bc->instructions[i];
+        switch (ins->opcode) {
+            case OP_U32_CONST:
+                values[ins->a] = ins->imm;
+                initialized[ins->a] = true;
+                break;
+            case OP_U32_ADD:
+                if (!initialized[ins->b] || !initialized[ins->flags]) {
+                    qn_diag_set_code(diag, "QN-E7513", 0, 0,
+                                     "u32 scalar bytecode reads uninitialized value");
+                    return QN_ERR_RUNTIME;
+                }
+                values[ins->a] = values[ins->b] + values[ins->flags];
+                initialized[ins->a] = true;
+                break;
+            case OP_U32_EMIT:
+                if (!initialized[ins->a] || emitted) {
+                    qn_diag_set_code(diag, "QN-E7514", 0, 0,
+                                     "invalid u32 scalar emit state");
+                    return QN_ERR_RUNTIME;
+                }
+                emitted = true;
+                emitted_id = ins->a;
+                break;
+            case OP_END:
+                if (i + 1u != bc->instruction_count || !emitted) {
+                    qn_diag_set_code(diag, "QN-E7515", 0, 0,
+                                     "invalid u32 scalar program termination");
+                    return QN_ERR_RUNTIME;
+                }
+                break;
+            default:
+                qn_diag_set_code(diag, "QN-E7516", 0, 0,
+                                 "unexpected opcode in u32 scalar VM");
+                return QN_ERR_RUNTIME;
+        }
+    }
+
+    out->native_scalar_result = true;
+    out->shots = 1u;
+    out->seed = 0u;
+    out->scalar_output_id = emitted_id;
+    out->scalar_output_value = values[emitted_id];
+    out->qvm_gpu_execution_attempted = false;
+    out->qvm_gpu_execution_completed = false;
+    out->qvm_cpu_fallback = route->cpu_fallback;
+
+    uint8_t encoded[4] = {
+        (uint8_t)out->scalar_output_value,
+        (uint8_t)(out->scalar_output_value >> 8),
+        (uint8_t)(out->scalar_output_value >> 16),
+        (uint8_t)(out->scalar_output_value >> 24)
+    };
+    qn_sha256(encoded, sizeof(encoded), out->scalar_output_digest);
+    return QN_OK;
+}
+
 QNStatus qn_vm_run_guarded(const QNBytecode *bc,
                            uint32_t shots,
                            uint64_t seed,
@@ -314,6 +401,14 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
         if (status != QN_OK) {
             qn_run_result_free(out);
         }
+        return status;
+    }
+
+    if (qn_qbc_is_u32_scalar_program(bc)) {
+        status = qn_vm_run_u32_scalar(
+            bc, shots, seed, route, out, diag
+        );
+        if (status != QN_OK) qn_run_result_free(out);
         return status;
     }
 
@@ -377,12 +472,15 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
                     i = bc->instruction_count;
                     break;
                 case OP_U32_VECTOR_ADD:
+                case OP_U32_CONST:
+                case OP_U32_ADD:
+                case OP_U32_EMIT:
                     qn_diag_set_code(
                         diag,
                         "QN-E7415",
                         0,
                         0,
-                        "bounded compute opcode reached quantum VM"
+                        "native compute opcode reached quantum VM"
                     );
                     free(amp);
                     qn_run_result_free(out);
@@ -548,6 +646,29 @@ void qn_print_result(const QNBytecode *bc,
         capability_text,
         sizeof(capability_text)
     );
+
+    if (result->native_scalar_result) {
+        char output_hex[65];
+        qn_hex32(result->scalar_output_digest, output_hex);
+        fprintf(stream, "QBIT_NOVA_NATIVE_SCALAR_RUN_V07\n");
+        fprintf(stream, "boundary=native_typed_u32_scalar\n");
+        fprintf(stream, "physical_qpu=false\n");
+        fprintf(stream, "qubits=0\n");
+        fprintf(stream, "u32_scalars=%u\n", bc->scalar_count);
+        fprintf(stream, "source_sha256=%s\n", source_hex);
+        fprintf(stream, "qbc_sha256=%s\n", qbc_hex);
+        fprintf(stream, "capabilities=%s\n", capability_text);
+        fprintf(stream, "guard=allowed\n");
+        qn_print_approval_lines(result, stream);
+        qn_print_route_lines(result, stream);
+        fprintf(stream, "scalar_contract=typed-u32-scalar-v1\n");
+        fprintf(stream, "overflow_semantics=uint32-modulo\n");
+        fprintf(stream, "implicit_type_conversion=false\n");
+        fprintf(stream, "emitted_scalar_id=%u\n", result->scalar_output_id);
+        fprintf(stream, "emitted_u32=%u\n", result->scalar_output_value);
+        fprintf(stream, "output_sha256=%s\n", output_hex);
+        return;
+    }
 
     if (result->native_compute_result) {
         char shader_hex[65];
@@ -760,6 +881,46 @@ static void qn_write_route_json(FILE *stream,
     );
 }
 
+static QNStatus qn_write_scalar_receipt(
+    FILE *stream,
+    const QNBytecode *bc,
+    const QNRunResult *result
+) {
+    char qbc_hex[65];
+    char source_hex[65];
+    char output_hex[65];
+    char capability_text[256];
+    qn_hex32(result->qbc_digest, qbc_hex);
+    qn_hex32(bc->source_digest, source_hex);
+    qn_hex32(result->scalar_output_digest, output_hex);
+    qn_capability_format(bc->capability_mask,
+                         capability_text,
+                         sizeof(capability_text));
+
+    fprintf(stream, "{\n");
+    fprintf(stream, "  \"marker\": \"QBIT_NOVA_NATIVE_SCALAR_RECEIPT_V07\",\n");
+    fprintf(stream, "  \"creator\": \"Universal Dragon Aslam\",\n");
+    fprintf(stream, "  \"boundary\": \"native_typed_u32_scalar\",\n");
+    fprintf(stream, "  \"physical_qpu\": false,\n");
+    fprintf(stream, "  \"guard\": \"allowed\",\n");
+    fprintf(stream, "  \"capabilities\": \"%s\",\n", capability_text);
+    qn_write_approval_json(stream, result);
+    qn_write_route_json(stream, result);
+    fprintf(stream, "  \"scalar_contract\": \"typed-u32-scalar-v1\",\n");
+    fprintf(stream, "  \"integer_width\": 32,\n");
+    fprintf(stream, "  \"overflow_semantics\": \"uint32-modulo\",\n");
+    fprintf(stream, "  \"implicit_type_conversion\": false,\n");
+    fprintf(stream, "  \"u32_scalars\": %u,\n", bc->scalar_count);
+    fprintf(stream, "  \"emitted_scalar_id\": %u,\n", result->scalar_output_id);
+    fprintf(stream, "  \"emitted_u32\": %u,\n", result->scalar_output_value);
+    fprintf(stream, "  \"output_sha256\": \"%s\",\n", output_hex);
+    fprintf(stream, "  \"qubits\": 0,\n");
+    fprintf(stream, "  \"source_sha256\": \"%s\",\n", source_hex);
+    fprintf(stream, "  \"qbc_sha256\": \"%s\"\n", qbc_hex);
+    fprintf(stream, "}\n");
+    return QN_OK;
+}
+
 static QNStatus qn_write_compute_receipt(
     FILE *stream,
     const QNBytecode *bc,
@@ -862,7 +1023,9 @@ QNStatus qn_write_receipt(const char *path,
         return QN_ERR_IO;
     }
 
-    if (result->native_compute_result) {
+    if (result->native_scalar_result) {
+        qn_write_scalar_receipt(stream, bc, result);
+    } else if (result->native_compute_result) {
         qn_write_compute_receipt(stream, bc, result);
     } else {
         char qbc_hex[65];

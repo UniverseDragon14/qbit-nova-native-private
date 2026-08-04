@@ -37,10 +37,13 @@ const char *qn_token_kind_name(QNTokenKind kind) {
         case TOK_INT: return "INT";
         case TOK_STATE: return "STATE";
         case TOK_ASSIGN: return "ASSIGN";
+        case TOK_EQUAL: return "EQUAL";
         case TOK_ARROW: return "ARROW";
         case TOK_LBRACKET: return "LBRACKET";
         case TOK_RBRACKET: return "RBRACKET";
         case TOK_DOT: return "DOT";
+        case TOK_COLON: return "COLON";
+        case TOK_PLUS: return "PLUS";
         case TOK_QBIT: return "QBIT";
         case TOK_QREG: return "QREG";
         case TOK_H: return "H";
@@ -54,6 +57,8 @@ const char *qn_token_kind_name(QNTokenKind kind) {
         case TOK_SEED: return "SEED";
         case TOK_SHOTS: return "SHOTS";
         case TOK_VECTOR_ADD_U32: return "VECTOR_ADD_U32";
+        case TOK_LET: return "LET";
+        case TOK_U32: return "U32";
         default: return "UNKNOWN";
     }
 }
@@ -73,6 +78,8 @@ static QNTokenKind keyword(const char *s) {
     if (!strcmp(s, "shots")) return TOK_SHOTS;
     if (!strcmp(s, "vector_add_u32") ||
         !strcmp(s, "u32_vector_add")) return TOK_VECTOR_ADD_U32;
+    if (!strcmp(s, "let")) return TOK_LET;
+    if (!strcmp(s, "u32")) return TOK_U32;
     return TOK_IDENT;
 }
 
@@ -105,6 +112,8 @@ QNStatus qn_lex(const char *source, QNTokenList *out, QNDiagnostic *diag) {
 
         if (c == ':' && source[i+1] == '=') {
             t.kind = TOK_ASSIGN; i += 2; col += 2;
+        } else if (c == '=') {
+            t.kind = TOK_EQUAL; ++i; ++col;
         } else if (c == '-' && source[i+1] == '>') {
             t.kind = TOK_ARROW; i += 2; col += 2;
         } else if (c == '[') {
@@ -113,6 +122,10 @@ QNStatus qn_lex(const char *source, QNTokenList *out, QNDiagnostic *diag) {
             t.kind = TOK_RBRACKET; ++i; ++col;
         } else if (c == '.') {
             t.kind = TOK_DOT; ++i; ++col;
+        } else if (c == ':') {
+            t.kind = TOK_COLON; ++i; ++col;
+        } else if (c == '+') {
+            t.kind = TOK_PLUS; ++i; ++col;
         } else if (c == '|') {
             size_t start = i++;
             int start_col = col++;
