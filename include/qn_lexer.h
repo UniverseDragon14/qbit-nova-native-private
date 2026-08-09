@@ -17,6 +17,9 @@ typedef enum {
     TOK_DOT,
     TOK_COLON,
     TOK_PLUS,
+    TOK_MINUS,
+    TOK_STAR,
+    TOK_SLASH,
 
     TOK_QBIT,
     TOK_QREG,

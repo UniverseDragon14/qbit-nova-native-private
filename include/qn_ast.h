@@ -25,7 +25,10 @@ typedef enum {
     STMT_SHOTS,
     STMT_VECTOR_ADD_U32,
     STMT_U32_LET,
-    STMT_U32_ADD
+    STMT_U32_ADD,
+    STMT_U32_SUB,
+    STMT_U32_MUL,
+    STMT_U32_DIV
 } QNStmtKind;
 
 typedef struct {

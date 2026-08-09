@@ -105,6 +105,9 @@ bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
                 break;
 
             case OP_U32_ADD:
+            case OP_U32_SUB:
+            case OP_U32_MUL:
+            case OP_U32_DIV:
                 if (ins->a >= bc->scalar_count ||
                     ins->b >= bc->scalar_count ||
                     ins->flags >= bc->scalar_count ||
@@ -375,6 +378,9 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             case OP_U32_VECTOR_ADD:
             case OP_U32_CONST:
             case OP_U32_ADD:
+            case OP_U32_SUB:
+            case OP_U32_MUL:
+            case OP_U32_DIV:
             case OP_U32_EMIT:
             case OP_END:
                 break;
@@ -403,6 +409,9 @@ QNStatus qn_qbc_decode(const uint8_t *data,
 
         if ((ins->opcode == OP_U32_CONST ||
              ins->opcode == OP_U32_ADD ||
+             ins->opcode == OP_U32_SUB ||
+             ins->opcode == OP_U32_MUL ||
+             ins->opcode == OP_U32_DIV ||
              ins->opcode == OP_U32_EMIT) && version != 4u) {
             qn_diag_set_code(diag, "QN-E7509", 0, 0,
                              "u32 scalar opcode requires QBC version 4");
@@ -418,11 +427,14 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
-        if (ins->opcode == OP_U32_ADD &&
+        if ((ins->opcode == OP_U32_ADD ||
+             ins->opcode == OP_U32_SUB ||
+             ins->opcode == OP_U32_MUL ||
+             ins->opcode == OP_U32_DIV) &&
             (ins->a >= scalars || ins->b >= scalars ||
              ins->flags >= scalars || ins->imm != 0u)) {
             qn_diag_set_code(diag, "QN-E7509", 0, 0,
-                             "invalid u32 add bytecode");
+                             "invalid u32 arithmetic bytecode");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
@@ -463,7 +475,9 @@ QNStatus qn_qbc_decode(const uint8_t *data,
         uint8_t opcode = out->instructions[i].opcode;
         if (opcode == OP_U32_VECTOR_ADD) contains_vector_opcode = true;
         if (opcode == OP_U32_CONST || opcode == OP_U32_ADD ||
-            opcode == OP_U32_EMIT) contains_scalar_opcode = true;
+            opcode == OP_U32_SUB || opcode == OP_U32_MUL ||
+            opcode == OP_U32_DIV || opcode == OP_U32_EMIT)
+            contains_scalar_opcode = true;
     }
 
     if (contains_vector_opcode) {

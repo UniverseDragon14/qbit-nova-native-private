@@ -23,6 +23,9 @@ typedef enum {
     QIR_OP_U32_VECTOR_ADD,
     QIR_OP_U32_CONST,
     QIR_OP_U32_ADD,
+    QIR_OP_U32_SUB,
+    QIR_OP_U32_MUL,
+    QIR_OP_U32_DIV,
     QIR_OP_U32_EMIT
 } QNQIROpcode;
 

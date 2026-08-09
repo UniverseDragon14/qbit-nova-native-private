@@ -1,0 +1,4 @@
+let a: u32 = 6
+let b: u32 = 7
+product = a * b
+emit product

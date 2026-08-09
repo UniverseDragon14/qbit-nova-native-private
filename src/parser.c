@@ -219,10 +219,24 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             s.as.u32_let.value = (uint32_t)value->int_value;
         } else if (is(&p, TOK_IDENT)) {
             const QNToken *output = expect(&p, TOK_IDENT, "output variable");
-            s.kind = STMT_U32_ADD;
-            if (!expect(&p, TOK_EQUAL, "'='") ) goto fail;
+            if (!output || !expect(&p, TOK_EQUAL, "'='")) goto fail;
             const QNToken *left = expect(&p, TOK_IDENT, "left variable");
-            if (!left || !expect(&p, TOK_PLUS, "'+'")) goto fail;
+            if (!left) goto fail;
+            if (match(&p, TOK_PLUS)) {
+                s.kind = STMT_U32_ADD;
+            } else if (match(&p, TOK_MINUS)) {
+                s.kind = STMT_U32_SUB;
+            } else if (match(&p, TOK_STAR)) {
+                s.kind = STMT_U32_MUL;
+            } else if (match(&p, TOK_SLASH)) {
+                s.kind = STMT_U32_DIV;
+            } else {
+                const QNToken *t = peek(&p);
+                qn_diag_set(diag, t->line, t->column,
+                            "expected '+', '-', '*' or '/', found %s",
+                            qn_token_kind_name(t->kind));
+                goto fail;
+            }
             const QNToken *right = expect(&p, TOK_IDENT, "right variable");
             if (!right) goto fail;
             snprintf(s.as.u32_add.output, sizeof(s.as.u32_add.output),

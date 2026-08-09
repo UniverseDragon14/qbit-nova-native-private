@@ -44,6 +44,9 @@ const char *qn_token_kind_name(QNTokenKind kind) {
         case TOK_DOT: return "DOT";
         case TOK_COLON: return "COLON";
         case TOK_PLUS: return "PLUS";
+        case TOK_MINUS: return "MINUS";
+        case TOK_STAR: return "STAR";
+        case TOK_SLASH: return "SLASH";
         case TOK_QBIT: return "QBIT";
         case TOK_QREG: return "QREG";
         case TOK_H: return "H";
@@ -126,6 +129,12 @@ QNStatus qn_lex(const char *source, QNTokenList *out, QNDiagnostic *diag) {
             t.kind = TOK_COLON; ++i; ++col;
         } else if (c == '+') {
             t.kind = TOK_PLUS; ++i; ++col;
+        } else if (c == '-') {
+            t.kind = TOK_MINUS; ++i; ++col;
+        } else if (c == '*') {
+            t.kind = TOK_STAR; ++i; ++col;
+        } else if (c == '/') {
+            t.kind = TOK_SLASH; ++i; ++col;
         } else if (c == '|') {
             size_t start = i++;
             int start_col = col++;

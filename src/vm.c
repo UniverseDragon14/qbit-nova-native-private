@@ -318,6 +318,38 @@ static QNStatus qn_vm_run_u32_scalar(
                 values[ins->a] = values[ins->b] + values[ins->flags];
                 initialized[ins->a] = true;
                 break;
+            case OP_U32_SUB:
+                if (!initialized[ins->b] || !initialized[ins->flags]) {
+                    qn_diag_set_code(diag, "QN-E7513", 0, 0,
+                                     "u32 scalar bytecode reads uninitialized value");
+                    return QN_ERR_RUNTIME;
+                }
+                values[ins->a] = values[ins->b] - values[ins->flags];
+                initialized[ins->a] = true;
+                break;
+            case OP_U32_MUL:
+                if (!initialized[ins->b] || !initialized[ins->flags]) {
+                    qn_diag_set_code(diag, "QN-E7513", 0, 0,
+                                     "u32 scalar bytecode reads uninitialized value");
+                    return QN_ERR_RUNTIME;
+                }
+                values[ins->a] = values[ins->b] * values[ins->flags];
+                initialized[ins->a] = true;
+                break;
+            case OP_U32_DIV:
+                if (!initialized[ins->b] || !initialized[ins->flags]) {
+                    qn_diag_set_code(diag, "QN-E7513", 0, 0,
+                                     "u32 scalar bytecode reads uninitialized value");
+                    return QN_ERR_RUNTIME;
+                }
+                if (values[ins->flags] == 0u) {
+                    qn_diag_set_code(diag, "QN-E7517", 0, 0,
+                                     "u32 scalar division by zero");
+                    return QN_ERR_RUNTIME;
+                }
+                values[ins->a] = values[ins->b] / values[ins->flags];
+                initialized[ins->a] = true;
+                break;
             case OP_U32_EMIT:
                 if (!initialized[ins->a] || emitted) {
                     qn_diag_set_code(diag, "QN-E7514", 0, 0,
@@ -474,6 +506,9 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
                 case OP_U32_VECTOR_ADD:
                 case OP_U32_CONST:
                 case OP_U32_ADD:
+                case OP_U32_SUB:
+                case OP_U32_MUL:
+                case OP_U32_DIV:
                 case OP_U32_EMIT:
                     qn_diag_set_code(
                         diag,
@@ -662,7 +697,10 @@ void qn_print_result(const QNBytecode *bc,
         qn_print_approval_lines(result, stream);
         qn_print_route_lines(result, stream);
         fprintf(stream, "scalar_contract=typed-u32-scalar-v1\n");
+        fprintf(stream, "arithmetic_ops=add,sub,mul,div\n");
         fprintf(stream, "overflow_semantics=uint32-modulo\n");
+        fprintf(stream, "division_semantics=unsigned-integer-truncate\n");
+        fprintf(stream, "division_by_zero=fail-closed-QN-E7517\n");
         fprintf(stream, "implicit_type_conversion=false\n");
         fprintf(stream, "emitted_scalar_id=%u\n", result->scalar_output_id);
         fprintf(stream, "emitted_u32=%u\n", result->scalar_output_value);
@@ -907,8 +945,11 @@ static QNStatus qn_write_scalar_receipt(
     qn_write_approval_json(stream, result);
     qn_write_route_json(stream, result);
     fprintf(stream, "  \"scalar_contract\": \"typed-u32-scalar-v1\",\n");
+    fprintf(stream, "  \"arithmetic_ops\": \"add,sub,mul,div\",\n");
     fprintf(stream, "  \"integer_width\": 32,\n");
     fprintf(stream, "  \"overflow_semantics\": \"uint32-modulo\",\n");
+    fprintf(stream, "  \"division_semantics\": \"unsigned-integer-truncate\",\n");
+    fprintf(stream, "  \"division_by_zero\": \"fail-closed-QN-E7517\",\n");
     fprintf(stream, "  \"implicit_type_conversion\": false,\n");
     fprintf(stream, "  \"u32_scalars\": %u,\n", bc->scalar_count);
     fprintf(stream, "  \"emitted_scalar_id\": %u,\n", result->scalar_output_id);

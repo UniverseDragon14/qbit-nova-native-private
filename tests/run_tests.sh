@@ -1139,11 +1139,141 @@ test ! -s "$TMP/u32-vulkan.out"
 
 echo "TYPED_U32_SCALAR_PIPELINE=PASS"
 
+echo "=== U32 SUB MUL DIV ARITHMETIC EXTENSION ==="
+
+"$BIN" qir examples/u32_scalar_sub.qn > "$TMP/u32-sub-qir.out"
+grep -q 'U32.SUB.*u32 a@0.*u32 b@1.*u32 diff@2' \
+  "$TMP/u32-sub-qir.out"
+
+"$BIN" qir examples/u32_scalar_mul.qn > "$TMP/u32-mul-qir.out"
+grep -q 'U32.MUL.*u32 a@0.*u32 b@1.*u32 product@2' \
+  "$TMP/u32-mul-qir.out"
+
+"$BIN" qir examples/u32_scalar_div.qn > "$TMP/u32-div-qir.out"
+grep -q 'U32.DIV.*u32 a@0.*u32 b@1.*u32 quotient@2' \
+  "$TMP/u32-div-qir.out"
+
+for SPEC in \
+  'sub 54 18 7d8e29fa389a36cca29bc0f07a7892dddd6f9070b9e33d12dce8ce3569f81810' \
+  'mul 55 42 e8a4b2ee7ede79a3afb332b5b6cc3d952a65fd8cffb897f5d18016577c33d7cc' \
+  'div 56 25 0623ccb9b1619bd388284a438034d8cb6431964ba727d8b1c450303105735488'
+do
+  set -- $SPEC
+  NAME="$1"
+  OPCODE="$2"
+  VALUE="$3"
+  OUTPUT_SHA="$4"
+  SOURCE="examples/u32_scalar_${NAME}.qn"
+
+  "$BIN" check "$SOURCE" > "$TMP/u32-${NAME}-check.out"
+  grep -q '^instructions=5$' "$TMP/u32-${NAME}-check.out"
+
+  "$BIN" build "$SOURCE" -o "$TMP/u32-${NAME}-a.qbc" >/dev/null
+  "$BIN" build "$SOURCE" -o "$TMP/u32-${NAME}-b.qbc" >/dev/null
+  cmp "$TMP/u32-${NAME}-a.qbc" "$TMP/u32-${NAME}-b.qbc"
+  test "$(stat -c '%s' "$TMP/u32-${NAME}-a.qbc")" -eq 120
+  test "$(od -An -tu1 -j 4 -N 1 "$TMP/u32-${NAME}-a.qbc" | tr -d '[:space:]')" = 4
+  test "$(od -An -tu1 -j 76 -N 1 "$TMP/u32-${NAME}-a.qbc" | tr -d '[:space:]')" = 3
+  test "$(od -An -tx1 -j 96 -N 1 "$TMP/u32-${NAME}-a.qbc" | tr -d '[:space:]')" = "$OPCODE"
+
+  "$BIN" run "$SOURCE" --backend cpu \
+    --receipt "$TMP/u32-${NAME}-cpu.json" \
+    > "$TMP/u32-${NAME}-cpu.out"
+
+  grep -q '^QBIT_NOVA_NATIVE_SCALAR_RUN_V07$' \
+    "$TMP/u32-${NAME}-cpu.out"
+  grep -q '^arithmetic_ops=add,sub,mul,div$' \
+    "$TMP/u32-${NAME}-cpu.out"
+  grep -q '^division_semantics=unsigned-integer-truncate$' \
+    "$TMP/u32-${NAME}-cpu.out"
+  grep -q '^division_by_zero=fail-closed-QN-E7517$' \
+    "$TMP/u32-${NAME}-cpu.out"
+  grep -q "^emitted_u32=${VALUE}$" "$TMP/u32-${NAME}-cpu.out"
+  grep -q "^output_sha256=${OUTPUT_SHA}$" \
+    "$TMP/u32-${NAME}-cpu.out"
+
+  grep -q '"arithmetic_ops": "add,sub,mul,div"' \
+    "$TMP/u32-${NAME}-cpu.json"
+  grep -q '"division_semantics": "unsigned-integer-truncate"' \
+    "$TMP/u32-${NAME}-cpu.json"
+  grep -q '"division_by_zero": "fail-closed-QN-E7517"' \
+    "$TMP/u32-${NAME}-cpu.json"
+  grep -q "\"emitted_u32\": ${VALUE}" \
+    "$TMP/u32-${NAME}-cpu.json"
+
+  "$BIN" exec "$TMP/u32-${NAME}-a.qbc" --backend auto \
+    --receipt "$TMP/u32-${NAME}-exec.json" \
+    > "$TMP/u32-${NAME}-exec.out"
+  grep -q '^qvm_selected_backend=cpu$' \
+    "$TMP/u32-${NAME}-exec.out"
+  grep -q '^qvm_selection_reason=scalar-operation-not-gpu-eligible$' \
+    "$TMP/u32-${NAME}-exec.out"
+  grep -q '^qvm_cpu_fallback=true$' \
+    "$TMP/u32-${NAME}-exec.out"
+  grep -q "^emitted_u32=${VALUE}$" \
+    "$TMP/u32-${NAME}-exec.out"
+done
+
+"$BIN" run tests/u32_scalar_sub_underflow.qn --backend cpu \
+  > "$TMP/u32-sub-underflow.out"
+grep -q '^emitted_u32=4294967295$' \
+  "$TMP/u32-sub-underflow.out"
+grep -q '^output_sha256=ad95131bc0b799c0b1af477fb14fcf26a6a9f76079e48bf090acb7e8367bfd0e$' \
+  "$TMP/u32-sub-underflow.out"
+
+"$BIN" run tests/u32_scalar_mul_overflow.qn --backend cpu \
+  > "$TMP/u32-mul-overflow.out"
+grep -q '^emitted_u32=4294967294$' \
+  "$TMP/u32-mul-overflow.out"
+grep -q '^output_sha256=b4248c210a2905b94345e1a8414d0e12efcfb2f4f0f2397159a71283397a0ccd$' \
+  "$TMP/u32-mul-overflow.out"
+
+"$BIN" run tests/u32_scalar_div_truncation.qn --backend cpu \
+  > "$TMP/u32-div-truncation.out"
+grep -q '^emitted_u32=3$' "$TMP/u32-div-truncation.out"
+grep -q '^output_sha256=9d9f290527a6be626a8f5985b26e19b237b44872b03631811df4416fc1713178$' \
+  "$TMP/u32-div-truncation.out"
+
+"$BIN" build tests/u32_scalar_div_zero.qn \
+  -o "$TMP/u32-div-zero.qbc" >/dev/null
+
+set +e
+"$BIN" run tests/u32_scalar_div_zero.qn --backend cpu \
+  > "$TMP/u32-div-zero-run.out" \
+  2> "$TMP/u32-div-zero-run.err"
+DIV_RUN_STATUS=$?
+
+"$BIN" exec "$TMP/u32-div-zero.qbc" --backend auto \
+  > "$TMP/u32-div-zero-exec.out" \
+  2> "$TMP/u32-div-zero-exec.err"
+DIV_EXEC_STATUS=$?
+set -e
+
+test "$DIV_RUN_STATUS" -eq 7
+test "$DIV_EXEC_STATUS" -eq 7
+test ! -s "$TMP/u32-div-zero-run.out"
+test ! -s "$TMP/u32-div-zero-exec.out"
+grep -q 'QN-E7517' "$TMP/u32-div-zero-run.err"
+grep -q 'QN-E7517' "$TMP/u32-div-zero-exec.err"
+
+"$BIN" build examples/u32_scalar.qn \
+  -o "$TMP/u32-step1-regression.qbc" >/dev/null
+test "$(sha256sum "$TMP/u32-step1-regression.qbc" | awk '{print $1}')" = \
+  '9c7c0638cf508ad5c690f9764395a40679f183ef4d6f5681fb101cb0e025aa12'
+
+"$BIN" build examples/vector_add_u32.qn \
+  -o "$TMP/u32-stage6-vector-regression.qbc" >/dev/null
+test "$(sha256sum "$TMP/u32-stage6-vector-regression.qbc" | awk '{print $1}')" = \
+  '9f9a624a88200847595c3a5499dc03fe4811bef1676e988fac4ce53a8448642f'
+
+echo "U32_ARITHMETIC_PIPELINE=PASS"
+
 echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/a.qbc" >/dev/null
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_U32_ARITHMETIC_V07_STEP2"
 echo "PASS: QBIT_NOVA_TYPED_U32_SCALAR_V07_STEP1"
 echo "PASS: QBIT_NOVA_BOUNDED_GPU_OPERATION_V06_STEP5"
 echo "PASS: QBIT_NOVA_QVM_GPU_ROUTING_V06_STEP4"

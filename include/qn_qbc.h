@@ -15,6 +15,9 @@ typedef enum {
     OP_U32_CONST = 0x51,
     OP_U32_ADD = 0x52,
     OP_U32_EMIT = 0x53,
+    OP_U32_SUB = 0x54,
+    OP_U32_MUL = 0x55,
+    OP_U32_DIV = 0x56,
     OP_END = 0x7f
 } QNOpcode;
 
