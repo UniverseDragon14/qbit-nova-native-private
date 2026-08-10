@@ -19,23 +19,28 @@ static int find_scalar(const QNQIRProgram *qir, const char *name) {
 
 static int declare_scalar(QNQIRProgram *qir,
                           const char *name,
+                          QNQIRType type,
                           int line,
                           int column,
                           QNDiagnostic *diag) {
     if (find_scalar(qir, name) >= 0) {
         qn_diag_set_code(diag, "QN-E7501", line, column,
-                         "duplicate u32 variable '%s'", name);
+                         "duplicate scalar variable '%s'", name);
         return -1;
     }
-    if (qir->scalar_count >= QN_MAX_U32_SCALARS) {
+    if (qir->scalar_count >= QN_MAX_SCALARS) {
         qn_diag_set_code(diag, "QN-E7502", line, column,
-                         "u32 variable limit exceeded (%u)",
-                         QN_MAX_U32_SCALARS);
+                         "scalar variable limit exceeded (%u)",
+                         QN_MAX_SCALARS);
         return -1;
     }
     uint16_t id = qir->scalar_count++;
     snprintf(qir->scalars[id].name,
              sizeof(qir->scalars[id].name), "%s", name);
+    qir->scalars[id].type = type;
+    if (type == QIR_TYPE_BOOL) {
+        qir->scalar_bool_mask |= UINT64_C(1) << id;
+    }
     return (int)id;
 }
 
@@ -124,15 +129,25 @@ static QNQIRValue u32_vector_value(const char *name) {
     return value;
 }
 
-static QNQIRValue u32_scalar_value(const QNQIRProgram *qir,
-                                   uint16_t scalar_id) {
+static QNQIRValue scalar_value(const QNQIRProgram *qir,
+                               uint16_t scalar_id) {
     QNQIRValue value;
     memset(&value, 0, sizeof(value));
-    value.type = QIR_TYPE_U32;
+    value.type = qir->scalars[scalar_id].type;
     value.register_id = scalar_id;
     snprintf(value.name, sizeof(value.name), "%s",
              qir->scalars[scalar_id].name);
     return value;
+}
+
+static unsigned scalar_bool_count(const QNQIRProgram *qir) {
+    unsigned count = 0u;
+    uint64_t mask = qir->scalar_bool_mask;
+    while (mask) {
+        count += (unsigned)(mask & UINT64_C(1));
+        mask >>= 1;
+    }
+    return count;
 }
 
 void qn_qir_free(QNQIRProgram *qir) {
@@ -149,6 +164,7 @@ const char *qn_qir_type_name(QNQIRType type) {
         case QIR_TYPE_RESULT: return "result";
         case QIR_TYPE_U32_VECTOR: return "u32vec<256>";
         case QIR_TYPE_U32: return "u32";
+        case QIR_TYPE_BOOL: return "bool";
         default: return "invalid";
     }
 }
@@ -168,6 +184,13 @@ const char *qn_qir_opcode_name(QNQIROpcode opcode) {
         case QIR_OP_U32_MUL: return "U32.MUL";
         case QIR_OP_U32_DIV: return "U32.DIV";
         case QIR_OP_U32_EMIT: return "U32.EMIT";
+        case QIR_OP_U32_EQ: return "U32.EQ";
+        case QIR_OP_U32_NE: return "U32.NE";
+        case QIR_OP_U32_LT: return "U32.LT";
+        case QIR_OP_U32_LE: return "U32.LE";
+        case QIR_OP_U32_GT: return "U32.GT";
+        case QIR_OP_U32_GE: return "U32.GE";
+        case QIR_OP_BOOL_EMIT: return "BOOL.EMIT";
         default: return "INVALID";
     }
 }
@@ -233,6 +256,12 @@ QNStatus qn_qir_build(const QNProgram *program,
             case STMT_U32_SUB:
             case STMT_U32_MUL:
             case STMT_U32_DIV:
+            case STMT_U32_EQ:
+            case STMT_U32_NE:
+            case STMT_U32_LT:
+            case STMT_U32_LE:
+            case STMT_U32_GT:
+            case STMT_U32_GE:
                 has_scalar_statement = true;
                 break;
             default:
@@ -397,11 +426,12 @@ QNStatus qn_qir_build(const QNProgram *program,
 
             case STMT_U32_LET: {
                 int id = declare_scalar(out, stmt->as.u32_let.name,
+                                        QIR_TYPE_U32,
                                         stmt->line, stmt->column, diag);
                 if (id < 0) goto fail;
                 out->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
                 ins.opcode = QIR_OP_U32_CONST;
-                ins.out = u32_scalar_value(out, (uint16_t)id);
+                ins.out = scalar_value(out, (uint16_t)id);
                 ins.imm = stmt->as.u32_let.value;
                 if (!append_qir(out, ins, diag)) goto fail;
                 break;
@@ -411,27 +441,37 @@ QNStatus qn_qir_build(const QNProgram *program,
             case STMT_U32_SUB:
             case STMT_U32_MUL:
             case STMT_U32_DIV: {
-                if (find_scalar(out, stmt->as.u32_add.output) >= 0) {
+                const char *op = stmt->kind == STMT_U32_ADD ? "+" :
+                                 stmt->kind == STMT_U32_SUB ? "-" :
+                                 stmt->kind == STMT_U32_MUL ? "*" : "/";
+                if (find_scalar(out, stmt->as.scalar_binary.output) >= 0) {
                     qn_diag_set_code(diag, "QN-E7501", stmt->line, stmt->column,
-                                     "duplicate u32 variable '%s'",
-                                     stmt->as.u32_add.output);
+                                     "duplicate scalar variable '%s'",
+                                     stmt->as.scalar_binary.output);
                     goto fail;
                 }
-                int left = find_scalar(out, stmt->as.u32_add.left);
-                int right = find_scalar(out, stmt->as.u32_add.right);
+                int left = find_scalar(out, stmt->as.scalar_binary.left);
+                int right = find_scalar(out, stmt->as.scalar_binary.right);
                 if (left < 0 || right < 0) {
-                    const char *op = stmt->kind == STMT_U32_ADD ? "+" :
-                                     stmt->kind == STMT_U32_SUB ? "-" :
-                                     stmt->kind == STMT_U32_MUL ? "*" : "/";
                     qn_diag_set_code(diag, "QN-E7504", stmt->line, stmt->column,
-                                     "unknown or uninitialized u32 variable in '%s = %s %s %s'",
-                                     stmt->as.u32_add.output,
-                                     stmt->as.u32_add.left,
+                                     "unknown or uninitialized scalar in '%s = %s %s %s'",
+                                     stmt->as.scalar_binary.output,
+                                     stmt->as.scalar_binary.left,
                                      op,
-                                     stmt->as.u32_add.right);
+                                     stmt->as.scalar_binary.right);
                     goto fail;
                 }
-                int output_id = declare_scalar(out, stmt->as.u32_add.output,
+                if (out->scalars[left].type != QIR_TYPE_U32 ||
+                    out->scalars[right].type != QIR_TYPE_U32) {
+                    qn_diag_set_code(diag, "QN-E7521", stmt->line, stmt->column,
+                                     "u32 arithmetic '%s' requires u32 operands; got %s and %s",
+                                     op,
+                                     qn_qir_type_name(out->scalars[left].type),
+                                     qn_qir_type_name(out->scalars[right].type));
+                    goto fail;
+                }
+                int output_id = declare_scalar(out, stmt->as.scalar_binary.output,
+                                               QIR_TYPE_U32,
                                                stmt->line, stmt->column, diag);
                 if (output_id < 0) goto fail;
                 out->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
@@ -439,9 +479,64 @@ QNStatus qn_qir_build(const QNProgram *program,
                              stmt->kind == STMT_U32_SUB ? QIR_OP_U32_SUB :
                              stmt->kind == STMT_U32_MUL ? QIR_OP_U32_MUL :
                                                            QIR_OP_U32_DIV;
-                ins.a = u32_scalar_value(out, (uint16_t)left);
-                ins.b = u32_scalar_value(out, (uint16_t)right);
-                ins.out = u32_scalar_value(out, (uint16_t)output_id);
+                ins.a = scalar_value(out, (uint16_t)left);
+                ins.b = scalar_value(out, (uint16_t)right);
+                ins.out = scalar_value(out, (uint16_t)output_id);
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+            }
+
+            case STMT_U32_EQ:
+            case STMT_U32_NE:
+            case STMT_U32_LT:
+            case STMT_U32_LE:
+            case STMT_U32_GT:
+            case STMT_U32_GE: {
+                const char *op = stmt->kind == STMT_U32_EQ ? "==" :
+                                 stmt->kind == STMT_U32_NE ? "!=" :
+                                 stmt->kind == STMT_U32_LT ? "<" :
+                                 stmt->kind == STMT_U32_LE ? "<=" :
+                                 stmt->kind == STMT_U32_GT ? ">" : ">=";
+                if (find_scalar(out, stmt->as.scalar_binary.output) >= 0) {
+                    qn_diag_set_code(diag, "QN-E7501", stmt->line, stmt->column,
+                                     "duplicate scalar variable '%s'",
+                                     stmt->as.scalar_binary.output);
+                    goto fail;
+                }
+                int left = find_scalar(out, stmt->as.scalar_binary.left);
+                int right = find_scalar(out, stmt->as.scalar_binary.right);
+                if (left < 0 || right < 0) {
+                    qn_diag_set_code(diag, "QN-E7504", stmt->line, stmt->column,
+                                     "unknown or uninitialized scalar in '%s = %s %s %s'",
+                                     stmt->as.scalar_binary.output,
+                                     stmt->as.scalar_binary.left,
+                                     op,
+                                     stmt->as.scalar_binary.right);
+                    goto fail;
+                }
+                if (out->scalars[left].type != QIR_TYPE_U32 ||
+                    out->scalars[right].type != QIR_TYPE_U32) {
+                    qn_diag_set_code(diag, "QN-E7522", stmt->line, stmt->column,
+                                     "u32 comparison '%s' requires u32 operands; got %s and %s",
+                                     op,
+                                     qn_qir_type_name(out->scalars[left].type),
+                                     qn_qir_type_name(out->scalars[right].type));
+                    goto fail;
+                }
+                int output_id = declare_scalar(out, stmt->as.scalar_binary.output,
+                                               QIR_TYPE_BOOL,
+                                               stmt->line, stmt->column, diag);
+                if (output_id < 0) goto fail;
+                out->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
+                ins.opcode = stmt->kind == STMT_U32_EQ ? QIR_OP_U32_EQ :
+                             stmt->kind == STMT_U32_NE ? QIR_OP_U32_NE :
+                             stmt->kind == STMT_U32_LT ? QIR_OP_U32_LT :
+                             stmt->kind == STMT_U32_LE ? QIR_OP_U32_LE :
+                             stmt->kind == STMT_U32_GT ? QIR_OP_U32_GT :
+                                                         QIR_OP_U32_GE;
+                ins.a = scalar_value(out, (uint16_t)left);
+                ins.b = scalar_value(out, (uint16_t)right);
+                ins.out = scalar_value(out, (uint16_t)output_id);
                 if (!append_qir(out, ins, diag)) goto fail;
                 break;
             }
@@ -457,12 +552,14 @@ QNStatus qn_qir_build(const QNProgram *program,
                     if (id < 0) {
                         qn_diag_set_code(diag, "QN-E7504",
                                          stmt->line, stmt->column,
-                                         "emit references unknown u32 variable '%s'",
+                                         "emit references unknown scalar variable '%s'",
                                          stmt->as.emit.name);
                         goto fail;
                     }
-                    ins.opcode = QIR_OP_U32_EMIT;
-                    ins.a = u32_scalar_value(out, (uint16_t)id);
+                    ins.a = scalar_value(out, (uint16_t)id);
+                    ins.opcode = ins.a.type == QIR_TYPE_BOOL
+                        ? QIR_OP_BOOL_EMIT
+                        : QIR_OP_U32_EMIT;
                 } else if (has_vector_add) {
                     if (!compute_produced ||
                         strcmp(compute_name, stmt->as.emit.name) != 0) {
@@ -623,6 +720,7 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
     out->total_qubits = qir->total_qubits;
     out->register_count = qir->register_count;
     out->scalar_count = qir->scalar_count;
+    out->scalar_bool_mask = qir->scalar_bool_mask;
     out->initial_basis = qir->initial_basis;
     out->default_shots = qir->default_shots;
     out->default_seed = qir->default_seed;
@@ -706,6 +804,46 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
                 dst->opcode = OP_U32_EMIT;
                 dst->a = (uint8_t)src->a.register_id;
                 break;
+            case QIR_OP_U32_EQ:
+                dst->opcode = OP_U32_EQ;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->b = (uint8_t)src->a.register_id;
+                dst->flags = (uint8_t)src->b.register_id;
+                break;
+            case QIR_OP_U32_NE:
+                dst->opcode = OP_U32_NE;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->b = (uint8_t)src->a.register_id;
+                dst->flags = (uint8_t)src->b.register_id;
+                break;
+            case QIR_OP_U32_LT:
+                dst->opcode = OP_U32_LT;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->b = (uint8_t)src->a.register_id;
+                dst->flags = (uint8_t)src->b.register_id;
+                break;
+            case QIR_OP_U32_LE:
+                dst->opcode = OP_U32_LE;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->b = (uint8_t)src->a.register_id;
+                dst->flags = (uint8_t)src->b.register_id;
+                break;
+            case QIR_OP_U32_GT:
+                dst->opcode = OP_U32_GT;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->b = (uint8_t)src->a.register_id;
+                dst->flags = (uint8_t)src->b.register_id;
+                break;
+            case QIR_OP_U32_GE:
+                dst->opcode = OP_U32_GE;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->b = (uint8_t)src->a.register_id;
+                dst->flags = (uint8_t)src->b.register_id;
+                break;
+            case QIR_OP_BOOL_EMIT:
+                dst->opcode = OP_BOOL_EMIT;
+                dst->a = (uint8_t)src->a.register_id;
+                break;
             default:
                 qn_diag_set(diag, src->line, src->column,
                             "cannot lower QIR opcode %d",
@@ -748,6 +886,10 @@ static void dump_value(const QNQIRProgram *qir,
             fprintf(stream, "u32 %s@%u", value->name,
                     value->register_id);
             break;
+        case QIR_TYPE_BOOL:
+            fprintf(stream, "bool %s@%u", value->name,
+                    value->register_id);
+            break;
         default:
             fprintf(stream, "none");
             break;
@@ -758,10 +900,24 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
     char source_hex[65];
     qn_hex32(qir->source_digest, source_hex);
 
-    fprintf(stream, "QBIT_NOVA_TYPED_QIR_V02\n");
+    unsigned bool_count = scalar_bool_count(qir);
+    if (bool_count > 0u) {
+        fprintf(stream, "QBIT_NOVA_TYPED_QIR_V03\n");
+    } else {
+        fprintf(stream, "QBIT_NOVA_TYPED_QIR_V02\n");
+    }
     fprintf(stream, "qubits=%u\n", qir->total_qubits);
     fprintf(stream, "registers=%u\n", qir->register_count);
-    fprintf(stream, "u32_scalars=%u\n", qir->scalar_count);
+    if (bool_count > 0u) {
+        fprintf(stream, "scalar_slots=%u\n", qir->scalar_count);
+        fprintf(stream, "u32_scalars=%u\n",
+                (unsigned)qir->scalar_count - bool_count);
+        fprintf(stream, "bool_scalars=%u\n", bool_count);
+        fprintf(stream, "scalar_bool_mask=0x%016llx\n",
+                (unsigned long long)qir->scalar_bool_mask);
+    } else {
+        fprintf(stream, "u32_scalars=%u\n", qir->scalar_count);
+    }
     fprintf(stream, "shots=%u\n", qir->default_shots);
     fprintf(stream, "seed=%llu\n",
             (unsigned long long)qir->default_seed);
@@ -819,6 +975,12 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
             case QIR_OP_U32_SUB:
             case QIR_OP_U32_MUL:
             case QIR_OP_U32_DIV:
+            case QIR_OP_U32_EQ:
+            case QIR_OP_U32_NE:
+            case QIR_OP_U32_LT:
+            case QIR_OP_U32_LE:
+            case QIR_OP_U32_GT:
+            case QIR_OP_U32_GE:
                 dump_value(qir, &ins->a, stream);
                 fprintf(stream, ", ");
                 dump_value(qir, &ins->b, stream);
@@ -826,6 +988,7 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
                 dump_value(qir, &ins->out, stream);
                 break;
             case QIR_OP_U32_EMIT:
+            case QIR_OP_BOOL_EMIT:
                 dump_value(qir, &ins->a, stream);
                 break;
             default:

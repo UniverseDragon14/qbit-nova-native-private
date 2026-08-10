@@ -158,12 +158,15 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
         );
     }
 
-    bool scalar_program = qn_qbc_is_u32_scalar_program(bc);
+    bool scalar_program = qn_qbc_is_typed_scalar_program(bc);
+    bool pure_u32_scalar = qn_qbc_is_u32_scalar_program(bc);
     qn_gpu_route_set_text(
         out->operation,
         sizeof(out->operation),
-        scalar_program ? "u32-scalar-program" :
-                         "quantum-state-simulation"
+        scalar_program
+            ? (pure_u32_scalar ? "u32-scalar-program"
+                               : "typed-scalar-program")
+            : "quantum-state-simulation"
     );
 
     /*

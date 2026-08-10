@@ -8,6 +8,7 @@
 #define QBC_V2_HEADER_SIZE 72u
 #define QBC_V3_HEADER_SIZE 80u
 #define QBC_V4_HEADER_SIZE 80u
+#define QBC_V5_HEADER_SIZE 88u
 #define QBC_REG_SIZE 68u
 #define QBC_INSN_SIZE 8u
 
@@ -22,6 +23,7 @@ bool qn_qbc_is_bounded_u32_vector_add(const QNBytecode *bc) {
         bc->total_qubits != 0u ||
         bc->register_count != 0u ||
         bc->scalar_count != 0u ||
+        bc->scalar_bool_mask != 0u ||
         bc->initial_basis != 0u ||
         bc->default_shots != 1u ||
         bc->default_seed != 1u ||
@@ -58,12 +60,24 @@ bool qn_qbc_is_bounded_u32_vector_add(const QNBytecode *bc) {
            end->imm == 0u;
 }
 
-bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
+static bool scalar_slot_is_bool(const QNBytecode *bc, uint16_t id) {
+    return id < 64u &&
+           (bc->scalar_bool_mask & (UINT64_C(1) << id)) != 0u;
+}
+
+static bool scalar_mask_fits_count(const QNBytecode *bc) {
+    if (bc->scalar_count > QN_MAX_SCALARS) return false;
+    if (bc->scalar_count >= 64u) return true;
+    return (bc->scalar_bool_mask >> bc->scalar_count) == 0u;
+}
+
+bool qn_qbc_is_typed_scalar_program(const QNBytecode *bc) {
     if (!bc ||
         bc->total_qubits != 0u ||
         bc->register_count != 0u ||
         bc->scalar_count == 0u ||
-        bc->scalar_count > QN_MAX_U32_SCALARS ||
+        bc->scalar_count > QN_MAX_SCALARS ||
+        !scalar_mask_fits_count(bc) ||
         bc->initial_basis != 0u ||
         bc->default_shots != 1u ||
         bc->default_seed != 1u ||
@@ -76,7 +90,7 @@ bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
         QN_CAP_COMPUTE_U32_SCALAR | QN_CAP_EVIDENCE_EMIT;
     if (bc->capability_mask != exact) return false;
 
-    bool initialized[QN_MAX_U32_SCALARS] = {false};
+    bool initialized[QN_MAX_SCALARS] = {false};
     bool emitted = false;
     bool saw_compute = false;
 
@@ -85,10 +99,16 @@ bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
         bool last = i + 1u == bc->instruction_count;
 
         if (last) {
-            return ins->opcode == OP_END &&
-                   ins->a == 0u && ins->b == 0u &&
-                   ins->flags == 0u && ins->imm == 0u &&
-                   emitted && saw_compute;
+            if (ins->opcode != OP_END ||
+                ins->a != 0u || ins->b != 0u ||
+                ins->flags != 0u || ins->imm != 0u ||
+                !emitted || !saw_compute) {
+                return false;
+            }
+            for (uint16_t id = 0; id < bc->scalar_count; ++id) {
+                if (!initialized[id]) return false;
+            }
+            return true;
         }
 
         if (emitted) return false;
@@ -96,6 +116,7 @@ bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
         switch (ins->opcode) {
             case OP_U32_CONST:
                 if (ins->a >= bc->scalar_count ||
+                    scalar_slot_is_bool(bc, ins->a) ||
                     initialized[ins->a] ||
                     ins->b != 0u || ins->flags != 0u) {
                     return false;
@@ -111,6 +132,31 @@ bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
                 if (ins->a >= bc->scalar_count ||
                     ins->b >= bc->scalar_count ||
                     ins->flags >= bc->scalar_count ||
+                    scalar_slot_is_bool(bc, ins->a) ||
+                    scalar_slot_is_bool(bc, ins->b) ||
+                    scalar_slot_is_bool(bc, ins->flags) ||
+                    initialized[ins->a] ||
+                    !initialized[ins->b] ||
+                    !initialized[ins->flags] ||
+                    ins->imm != 0u) {
+                    return false;
+                }
+                initialized[ins->a] = true;
+                saw_compute = true;
+                break;
+
+            case OP_U32_EQ:
+            case OP_U32_NE:
+            case OP_U32_LT:
+            case OP_U32_LE:
+            case OP_U32_GT:
+            case OP_U32_GE:
+                if (ins->a >= bc->scalar_count ||
+                    ins->b >= bc->scalar_count ||
+                    ins->flags >= bc->scalar_count ||
+                    !scalar_slot_is_bool(bc, ins->a) ||
+                    scalar_slot_is_bool(bc, ins->b) ||
+                    scalar_slot_is_bool(bc, ins->flags) ||
                     initialized[ins->a] ||
                     !initialized[ins->b] ||
                     !initialized[ins->flags] ||
@@ -123,6 +169,18 @@ bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
 
             case OP_U32_EMIT:
                 if (ins->a >= bc->scalar_count ||
+                    scalar_slot_is_bool(bc, ins->a) ||
+                    !initialized[ins->a] || emitted ||
+                    ins->b != 0u || ins->flags != 0u ||
+                    ins->imm != 0u) {
+                    return false;
+                }
+                emitted = true;
+                break;
+
+            case OP_BOOL_EMIT:
+                if (ins->a >= bc->scalar_count ||
+                    !scalar_slot_is_bool(bc, ins->a) ||
                     !initialized[ins->a] || emitted ||
                     ins->b != 0u || ins->flags != 0u ||
                     ins->imm != 0u) {
@@ -137,6 +195,11 @@ bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
     }
 
     return false;
+}
+
+bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc) {
+    return bc && bc->scalar_bool_mask == 0u &&
+           qn_qbc_is_typed_scalar_program(bc);
 }
 
 QNStatus qn_compile(const QNProgram *program,
@@ -190,9 +253,12 @@ QNStatus qn_qbc_encode(const QNBytecode *bc,
                        uint8_t **data_out,
                        size_t *size_out,
                        QNDiagnostic *diag) {
-    uint16_t version = bc->scalar_count > 0u ? 4u : 3u;
-    uint16_t header_size = bc->scalar_count > 0u
-        ? QBC_V4_HEADER_SIZE : QBC_V3_HEADER_SIZE;
+    uint16_t version = bc->scalar_bool_mask != 0u
+        ? 5u
+        : (bc->scalar_count > 0u ? 4u : 3u);
+    uint16_t header_size = version == 5u
+        ? QBC_V5_HEADER_SIZE
+        : (version == 4u ? QBC_V4_HEADER_SIZE : QBC_V3_HEADER_SIZE);
     size_t size =
         header_size +
         bc->register_count * QBC_REG_SIZE +
@@ -215,7 +281,8 @@ QNStatus qn_qbc_encode(const QNBytecode *bc,
     put64(data + 28, bc->default_seed);
     memcpy(data + 36, bc->source_digest, 32);
     put64(data + 68, bc->capability_mask);
-    if (version == 4u) put16(data + 76, bc->scalar_count);
+    if (version >= 4u) put16(data + 76, bc->scalar_count);
+    if (version == 5u) put64(data + 80, bc->scalar_bool_mask);
 
     size_t at = header_size;
 
@@ -259,7 +326,8 @@ QNStatus qn_qbc_decode(const uint8_t *data,
     if (!((version == 1u && header_size == QBC_V1_HEADER_SIZE) ||
           (version == 2u && header_size == QBC_V2_HEADER_SIZE) ||
           (version == 3u && header_size == QBC_V3_HEADER_SIZE) ||
-          (version == 4u && header_size == QBC_V4_HEADER_SIZE))) {
+          (version == 4u && header_size == QBC_V4_HEADER_SIZE) ||
+          (version == 5u && header_size == QBC_V5_HEADER_SIZE))) {
         qn_diag_set(diag, 0, 0,
                     "unsupported QBC version/header");
         return QN_ERR_QBC;
@@ -273,11 +341,13 @@ QNStatus qn_qbc_decode(const uint8_t *data,
     uint32_t instruction_count = get32(data + 8);
     uint16_t qubits = get16(data + 12);
     uint16_t registers = get16(data + 14);
-    uint16_t scalars = version == 4u ? get16(data + 76) : 0u;
+    uint16_t scalars = version >= 4u ? get16(data + 76) : 0u;
+    uint64_t scalar_bool_mask = version == 5u ? get64(data + 80) : 0u;
 
     if (qubits > QN_MAX_QUBITS ||
         registers > QN_MAX_REGISTERS ||
-        scalars > QN_MAX_U32_SCALARS ||
+        scalars > QN_MAX_SCALARS ||
+        (scalars < 64u && (scalar_bool_mask >> scalars) != 0u) ||
         instruction_count > QN_MAX_INSTRUCTIONS) {
         qn_diag_set(diag, 0, 0, "QBC limits invalid");
         return QN_ERR_QBC;
@@ -296,6 +366,7 @@ QNStatus qn_qbc_decode(const uint8_t *data,
     out->total_qubits = qubits;
     out->register_count = registers;
     out->scalar_count = scalars;
+    out->scalar_bool_mask = scalar_bool_mask;
     out->initial_basis = get64(data + 16);
     out->default_shots = get32(data + 24);
     out->default_seed = get64(data + 28);
@@ -381,7 +452,14 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             case OP_U32_SUB:
             case OP_U32_MUL:
             case OP_U32_DIV:
+            case OP_U32_EQ:
+            case OP_U32_NE:
+            case OP_U32_LT:
+            case OP_U32_LE:
+            case OP_U32_GT:
+            case OP_U32_GE:
             case OP_U32_EMIT:
+            case OP_BOOL_EMIT:
             case OP_END:
                 break;
             default:
@@ -412,9 +490,23 @@ QNStatus qn_qbc_decode(const uint8_t *data,
              ins->opcode == OP_U32_SUB ||
              ins->opcode == OP_U32_MUL ||
              ins->opcode == OP_U32_DIV ||
-             ins->opcode == OP_U32_EMIT) && version != 4u) {
+             ins->opcode == OP_U32_EMIT) &&
+            version != 4u && version != 5u) {
             qn_diag_set_code(diag, "QN-E7509", 0, 0,
-                             "u32 scalar opcode requires QBC version 4");
+                             "u32 scalar opcode requires QBC version 4 or 5");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+
+        if ((ins->opcode == OP_U32_EQ ||
+             ins->opcode == OP_U32_NE ||
+             ins->opcode == OP_U32_LT ||
+             ins->opcode == OP_U32_LE ||
+             ins->opcode == OP_U32_GT ||
+             ins->opcode == OP_U32_GE ||
+             ins->opcode == OP_BOOL_EMIT) && version != 5u) {
+            qn_diag_set_code(diag, "QN-E7523", 0, 0,
+                             "comparison/bool opcode requires QBC version 5");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
@@ -438,6 +530,28 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
+        if ((ins->opcode == OP_U32_EQ ||
+             ins->opcode == OP_U32_NE ||
+             ins->opcode == OP_U32_LT ||
+             ins->opcode == OP_U32_LE ||
+             ins->opcode == OP_U32_GT ||
+             ins->opcode == OP_U32_GE) &&
+            (ins->a >= scalars || ins->b >= scalars ||
+             ins->flags >= scalars || ins->imm != 0u)) {
+            qn_diag_set_code(diag, "QN-E7524", 0, 0,
+                             "invalid u32 comparison bytecode");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+        if (ins->opcode == OP_BOOL_EMIT &&
+            (ins->a >= scalars || ins->b != 0u ||
+             ins->flags != 0u || ins->imm != 0u)) {
+            qn_diag_set_code(diag, "QN-E7525", 0, 0,
+                             "invalid bool emit bytecode");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+
         if (ins->opcode == OP_U32_EMIT &&
             (ins->a >= scalars || ins->b != 0u ||
              ins->flags != 0u || ins->imm != 0u)) {
@@ -476,7 +590,11 @@ QNStatus qn_qbc_decode(const uint8_t *data,
         if (opcode == OP_U32_VECTOR_ADD) contains_vector_opcode = true;
         if (opcode == OP_U32_CONST || opcode == OP_U32_ADD ||
             opcode == OP_U32_SUB || opcode == OP_U32_MUL ||
-            opcode == OP_U32_DIV || opcode == OP_U32_EMIT)
+            opcode == OP_U32_DIV || opcode == OP_U32_EQ ||
+            opcode == OP_U32_NE || opcode == OP_U32_LT ||
+            opcode == OP_U32_LE || opcode == OP_U32_GT ||
+            opcode == OP_U32_GE || opcode == OP_U32_EMIT ||
+            opcode == OP_BOOL_EMIT)
             contains_scalar_opcode = true;
     }
 
@@ -489,9 +607,17 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             return QN_ERR_QBC;
         }
     } else if (contains_scalar_opcode) {
-        if (version != 4u || !qn_qbc_is_u32_scalar_program(out)) {
+        bool valid = false;
+        if (version == 4u) {
+            valid = out->scalar_bool_mask == 0u &&
+                    qn_qbc_is_u32_scalar_program(out);
+        } else if (version == 5u) {
+            valid = out->scalar_bool_mask != 0u &&
+                    qn_qbc_is_typed_scalar_program(out);
+        }
+        if (!valid) {
             qn_diag_set_code(diag, "QN-E7509", 0, 0,
-                             "QBC u32 scalar program contract invalid");
+                             "QBC typed scalar program contract invalid");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }

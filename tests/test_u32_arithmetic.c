@@ -86,7 +86,7 @@ int main(void) {
     decoded.instructions[4].flags = 1u;
 
     uint8_t saved = encoded[96];
-    encoded[96] = 0x57u;
+    encoded[96] = 0x60u;
     QNBytecode invalid;
     memset(&invalid, 0, sizeof(invalid));
     if (qn_qbc_decode(

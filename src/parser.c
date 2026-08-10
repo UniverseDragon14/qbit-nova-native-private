@@ -230,20 +230,32 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
                 s.kind = STMT_U32_MUL;
             } else if (match(&p, TOK_SLASH)) {
                 s.kind = STMT_U32_DIV;
+            } else if (match(&p, TOK_EQ_EQ)) {
+                s.kind = STMT_U32_EQ;
+            } else if (match(&p, TOK_BANG_EQUAL)) {
+                s.kind = STMT_U32_NE;
+            } else if (match(&p, TOK_LT)) {
+                s.kind = STMT_U32_LT;
+            } else if (match(&p, TOK_LT_EQUAL)) {
+                s.kind = STMT_U32_LE;
+            } else if (match(&p, TOK_GT)) {
+                s.kind = STMT_U32_GT;
+            } else if (match(&p, TOK_GT_EQUAL)) {
+                s.kind = STMT_U32_GE;
             } else {
                 const QNToken *t = peek(&p);
                 qn_diag_set(diag, t->line, t->column,
-                            "expected '+', '-', '*' or '/', found %s",
+                            "expected arithmetic or comparison operator, found %s",
                             qn_token_kind_name(t->kind));
                 goto fail;
             }
             const QNToken *right = expect(&p, TOK_IDENT, "right variable");
             if (!right) goto fail;
-            snprintf(s.as.u32_add.output, sizeof(s.as.u32_add.output),
+            snprintf(s.as.scalar_binary.output, sizeof(s.as.scalar_binary.output),
                      "%s", output->text);
-            snprintf(s.as.u32_add.left, sizeof(s.as.u32_add.left),
+            snprintf(s.as.scalar_binary.left, sizeof(s.as.scalar_binary.left),
                      "%s", left->text);
-            snprintf(s.as.u32_add.right, sizeof(s.as.u32_add.right),
+            snprintf(s.as.scalar_binary.right, sizeof(s.as.scalar_binary.right),
                      "%s", right->text);
         } else if (match(&p, TOK_VECTOR_ADD_U32)) {
             s.kind = STMT_VECTOR_ADD_U32;

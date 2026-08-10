@@ -273,7 +273,7 @@ static QNStatus qn_vm_run_bounded_compute(
     return QN_OK;
 }
 
-static QNStatus qn_vm_run_u32_scalar(
+static QNStatus qn_vm_run_typed_scalar(
     const QNBytecode *bc,
     uint32_t shots,
     uint64_t seed,
@@ -283,22 +283,22 @@ static QNStatus qn_vm_run_u32_scalar(
 ) {
     if (shots != 0u || seed != 0u) {
         qn_diag_set_code(diag, "QN-E7510", 0, 0,
-                         "u32 scalar programs do not accept --shots or --seed");
+                         "typed scalar programs do not accept --shots or --seed");
         return QN_ERR_PARSE;
     }
     if (strcmp(route->selected_backend, "cpu") != 0) {
         qn_diag_set_code(diag, "QN-E7511", 0, 0,
-                         "u32 scalar execution requires CPU route");
+                         "typed scalar execution requires CPU route");
         return QN_ERR_RUNTIME;
     }
-    if (!qn_qbc_is_u32_scalar_program(bc)) {
+    if (!qn_qbc_is_typed_scalar_program(bc)) {
         qn_diag_set_code(diag, "QN-E7512", 0, 0,
-                         "invalid u32 scalar bytecode contract");
+                         "invalid typed scalar bytecode contract");
         return QN_ERR_QBC;
     }
 
-    uint32_t values[QN_MAX_U32_SCALARS] = {0};
-    bool initialized[QN_MAX_U32_SCALARS] = {false};
+    uint32_t values[QN_MAX_SCALARS] = {0};
+    bool initialized[QN_MAX_SCALARS] = {false};
     bool emitted = false;
     uint16_t emitted_id = 0u;
 
@@ -350,10 +350,46 @@ static QNStatus qn_vm_run_u32_scalar(
                 values[ins->a] = values[ins->b] / values[ins->flags];
                 initialized[ins->a] = true;
                 break;
+            case OP_U32_EQ:
+            case OP_U32_NE:
+            case OP_U32_LT:
+            case OP_U32_LE:
+            case OP_U32_GT:
+            case OP_U32_GE:
+                if (!initialized[ins->b] || !initialized[ins->flags]) {
+                    qn_diag_set_code(diag, "QN-E7513", 0, 0,
+                                     "typed scalar bytecode reads uninitialized value");
+                    return QN_ERR_RUNTIME;
+                }
+                switch (ins->opcode) {
+                    case OP_U32_EQ:
+                        values[ins->a] = values[ins->b] == values[ins->flags];
+                        break;
+                    case OP_U32_NE:
+                        values[ins->a] = values[ins->b] != values[ins->flags];
+                        break;
+                    case OP_U32_LT:
+                        values[ins->a] = values[ins->b] < values[ins->flags];
+                        break;
+                    case OP_U32_LE:
+                        values[ins->a] = values[ins->b] <= values[ins->flags];
+                        break;
+                    case OP_U32_GT:
+                        values[ins->a] = values[ins->b] > values[ins->flags];
+                        break;
+                    case OP_U32_GE:
+                        values[ins->a] = values[ins->b] >= values[ins->flags];
+                        break;
+                    default:
+                        break;
+                }
+                initialized[ins->a] = true;
+                break;
             case OP_U32_EMIT:
+            case OP_BOOL_EMIT:
                 if (!initialized[ins->a] || emitted) {
                     qn_diag_set_code(diag, "QN-E7514", 0, 0,
-                                     "invalid u32 scalar emit state");
+                                     "invalid typed scalar emit state");
                     return QN_ERR_RUNTIME;
                 }
                 emitted = true;
@@ -362,13 +398,13 @@ static QNStatus qn_vm_run_u32_scalar(
             case OP_END:
                 if (i + 1u != bc->instruction_count || !emitted) {
                     qn_diag_set_code(diag, "QN-E7515", 0, 0,
-                                     "invalid u32 scalar program termination");
+                                     "invalid typed scalar program termination");
                     return QN_ERR_RUNTIME;
                 }
                 break;
             default:
                 qn_diag_set_code(diag, "QN-E7516", 0, 0,
-                                 "unexpected opcode in u32 scalar VM");
+                                 "unexpected opcode in typed scalar VM");
                 return QN_ERR_RUNTIME;
         }
     }
@@ -378,17 +414,24 @@ static QNStatus qn_vm_run_u32_scalar(
     out->seed = 0u;
     out->scalar_output_id = emitted_id;
     out->scalar_output_value = values[emitted_id];
+    out->scalar_output_is_bool =
+        (bc->scalar_bool_mask & (UINT64_C(1) << emitted_id)) != 0u;
     out->qvm_gpu_execution_attempted = false;
     out->qvm_gpu_execution_completed = false;
     out->qvm_cpu_fallback = route->cpu_fallback;
 
-    uint8_t encoded[4] = {
-        (uint8_t)out->scalar_output_value,
-        (uint8_t)(out->scalar_output_value >> 8),
-        (uint8_t)(out->scalar_output_value >> 16),
-        (uint8_t)(out->scalar_output_value >> 24)
-    };
-    qn_sha256(encoded, sizeof(encoded), out->scalar_output_digest);
+    if (out->scalar_output_is_bool) {
+        uint8_t encoded = (uint8_t)(out->scalar_output_value != 0u);
+        qn_sha256(&encoded, 1u, out->scalar_output_digest);
+    } else {
+        uint8_t encoded[4] = {
+            (uint8_t)out->scalar_output_value,
+            (uint8_t)(out->scalar_output_value >> 8),
+            (uint8_t)(out->scalar_output_value >> 16),
+            (uint8_t)(out->scalar_output_value >> 24)
+        };
+        qn_sha256(encoded, sizeof(encoded), out->scalar_output_digest);
+    }
     return QN_OK;
 }
 
@@ -436,8 +479,8 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
         return status;
     }
 
-    if (qn_qbc_is_u32_scalar_program(bc)) {
-        status = qn_vm_run_u32_scalar(
+    if (qn_qbc_is_typed_scalar_program(bc)) {
+        status = qn_vm_run_typed_scalar(
             bc, shots, seed, route, out, diag
         );
         if (status != QN_OK) qn_run_result_free(out);
@@ -667,6 +710,16 @@ static void qn_print_route_lines(const QNRunResult *result,
     );
 }
 
+static unsigned qn_scalar_bool_count(const QNBytecode *bc) {
+    unsigned count = 0u;
+    uint64_t mask = bc->scalar_bool_mask;
+    while (mask) {
+        count += (unsigned)(mask & UINT64_C(1));
+        mask >>= 1;
+    }
+    return count;
+}
+
 void qn_print_result(const QNBytecode *bc,
                      const QNRunResult *result,
                      FILE *stream) {
@@ -684,12 +737,47 @@ void qn_print_result(const QNBytecode *bc,
 
     if (result->native_scalar_result) {
         char output_hex[65];
+        unsigned bool_count = qn_scalar_bool_count(bc);
+        unsigned u32_count = (unsigned)bc->scalar_count - bool_count;
         qn_hex32(result->scalar_output_digest, output_hex);
+        if (bc->scalar_bool_mask != 0u) {
+            fprintf(stream, "QBIT_NOVA_NATIVE_TYPED_SCALAR_RUN_V07_STEP3\n");
+            fprintf(stream, "boundary=native_typed_u32_bool_scalar\n");
+            fprintf(stream, "physical_qpu=false\n");
+            fprintf(stream, "qubits=0\n");
+            fprintf(stream, "scalar_slots=%u\n", bc->scalar_count);
+            fprintf(stream, "u32_scalars=%u\n", u32_count);
+            fprintf(stream, "bool_scalars=%u\n", bool_count);
+            fprintf(stream, "source_sha256=%s\n", source_hex);
+            fprintf(stream, "qbc_sha256=%s\n", qbc_hex);
+            fprintf(stream, "capabilities=%s\n", capability_text);
+            fprintf(stream, "guard=allowed\n");
+            qn_print_approval_lines(result, stream);
+            qn_print_route_lines(result, stream);
+            fprintf(stream, "scalar_contract=typed-u32-bool-v1\n");
+            fprintf(stream, "comparison_ops=eq,ne,lt,le,gt,ge\n");
+            fprintf(stream, "comparison_operand_type=u32\n");
+            fprintf(stream, "comparison_result_type=bool\n");
+            fprintf(stream, "bool_encoding=canonical-0-or-1\n");
+            fprintf(stream, "implicit_type_conversion=false\n");
+            fprintf(stream, "emitted_scalar_id=%u\n", result->scalar_output_id);
+            fprintf(stream, "output_type=%s\n",
+                    result->scalar_output_is_bool ? "bool" : "u32");
+            if (result->scalar_output_is_bool) {
+                fprintf(stream, "emitted_bool=%s\n",
+                        result->scalar_output_value ? "true" : "false");
+            } else {
+                fprintf(stream, "emitted_u32=%u\n",
+                        result->scalar_output_value);
+            }
+            fprintf(stream, "output_sha256=%s\n", output_hex);
+            return;
+        }
         fprintf(stream, "QBIT_NOVA_NATIVE_SCALAR_RUN_V07\n");
         fprintf(stream, "boundary=native_typed_u32_scalar\n");
         fprintf(stream, "physical_qpu=false\n");
         fprintf(stream, "qubits=0\n");
-        fprintf(stream, "u32_scalars=%u\n", bc->scalar_count);
+        fprintf(stream, "u32_scalars=%u\n", u32_count);
         fprintf(stream, "source_sha256=%s\n", source_hex);
         fprintf(stream, "qbc_sha256=%s\n", qbc_hex);
         fprintf(stream, "capabilities=%s\n", capability_text);
@@ -919,6 +1007,60 @@ static void qn_write_route_json(FILE *stream,
     );
 }
 
+static QNStatus qn_write_typed_scalar_receipt(
+    FILE *stream,
+    const QNBytecode *bc,
+    const QNRunResult *result
+) {
+    char qbc_hex[65];
+    char source_hex[65];
+    char output_hex[65];
+    char capability_text[256];
+    unsigned bool_count = qn_scalar_bool_count(bc);
+    unsigned u32_count = (unsigned)bc->scalar_count - bool_count;
+    qn_hex32(result->qbc_digest, qbc_hex);
+    qn_hex32(bc->source_digest, source_hex);
+    qn_hex32(result->scalar_output_digest, output_hex);
+    qn_capability_format(bc->capability_mask,
+                         capability_text,
+                         sizeof(capability_text));
+
+    fprintf(stream, "{\n");
+    fprintf(stream, "  \"marker\": \"QBIT_NOVA_NATIVE_TYPED_SCALAR_RECEIPT_V07_STEP3\",\n");
+    fprintf(stream, "  \"creator\": \"Universal Dragon Aslam\",\n");
+    fprintf(stream, "  \"boundary\": \"native_typed_u32_bool_scalar\",\n");
+    fprintf(stream, "  \"physical_qpu\": false,\n");
+    fprintf(stream, "  \"guard\": \"allowed\",\n");
+    fprintf(stream, "  \"capabilities\": \"%s\",\n", capability_text);
+    qn_write_approval_json(stream, result);
+    qn_write_route_json(stream, result);
+    fprintf(stream, "  \"scalar_contract\": \"typed-u32-bool-v1\",\n");
+    fprintf(stream, "  \"comparison_ops\": \"eq,ne,lt,le,gt,ge\",\n");
+    fprintf(stream, "  \"comparison_operand_type\": \"u32\",\n");
+    fprintf(stream, "  \"comparison_result_type\": \"bool\",\n");
+    fprintf(stream, "  \"bool_encoding\": \"canonical-0-or-1\",\n");
+    fprintf(stream, "  \"implicit_type_conversion\": false,\n");
+    fprintf(stream, "  \"scalar_slots\": %u,\n", bc->scalar_count);
+    fprintf(stream, "  \"u32_scalars\": %u,\n", u32_count);
+    fprintf(stream, "  \"bool_scalars\": %u,\n", bool_count);
+    fprintf(stream, "  \"emitted_scalar_id\": %u,\n", result->scalar_output_id);
+    fprintf(stream, "  \"output_type\": \"%s\",\n",
+            result->scalar_output_is_bool ? "bool" : "u32");
+    if (result->scalar_output_is_bool) {
+        fprintf(stream, "  \"emitted_bool\": %s,\n",
+                result->scalar_output_value ? "true" : "false");
+    } else {
+        fprintf(stream, "  \"emitted_u32\": %u,\n",
+                result->scalar_output_value);
+    }
+    fprintf(stream, "  \"output_sha256\": \"%s\",\n", output_hex);
+    fprintf(stream, "  \"qubits\": 0,\n");
+    fprintf(stream, "  \"source_sha256\": \"%s\",\n", source_hex);
+    fprintf(stream, "  \"qbc_sha256\": \"%s\"\n", qbc_hex);
+    fprintf(stream, "}\n");
+    return QN_OK;
+}
+
 static QNStatus qn_write_scalar_receipt(
     FILE *stream,
     const QNBytecode *bc,
@@ -951,7 +1093,8 @@ static QNStatus qn_write_scalar_receipt(
     fprintf(stream, "  \"division_semantics\": \"unsigned-integer-truncate\",\n");
     fprintf(stream, "  \"division_by_zero\": \"fail-closed-QN-E7517\",\n");
     fprintf(stream, "  \"implicit_type_conversion\": false,\n");
-    fprintf(stream, "  \"u32_scalars\": %u,\n", bc->scalar_count);
+    fprintf(stream, "  \"u32_scalars\": %u,\n",
+            (unsigned)bc->scalar_count - qn_scalar_bool_count(bc));
     fprintf(stream, "  \"emitted_scalar_id\": %u,\n", result->scalar_output_id);
     fprintf(stream, "  \"emitted_u32\": %u,\n", result->scalar_output_value);
     fprintf(stream, "  \"output_sha256\": \"%s\",\n", output_hex);
@@ -1064,7 +1207,9 @@ QNStatus qn_write_receipt(const char *path,
         return QN_ERR_IO;
     }
 
-    if (result->native_scalar_result) {
+    if (result->native_scalar_result && bc->scalar_bool_mask != 0u) {
+        qn_write_typed_scalar_receipt(stream, bc, result);
+    } else if (result->native_scalar_result) {
         qn_write_scalar_receipt(stream, bc, result);
     } else if (result->native_compute_result) {
         qn_write_compute_receipt(stream, bc, result);

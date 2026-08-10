@@ -20,6 +20,12 @@ typedef enum {
     TOK_MINUS,
     TOK_STAR,
     TOK_SLASH,
+    TOK_EQ_EQ,
+    TOK_BANG_EQUAL,
+    TOK_LT,
+    TOK_LT_EQUAL,
+    TOK_GT,
+    TOK_GT_EQUAL,
 
     TOK_QBIT,
     TOK_QREG,

@@ -47,6 +47,12 @@ const char *qn_token_kind_name(QNTokenKind kind) {
         case TOK_MINUS: return "MINUS";
         case TOK_STAR: return "STAR";
         case TOK_SLASH: return "SLASH";
+        case TOK_EQ_EQ: return "EQ_EQ";
+        case TOK_BANG_EQUAL: return "BANG_EQUAL";
+        case TOK_LT: return "LT";
+        case TOK_LT_EQUAL: return "LT_EQUAL";
+        case TOK_GT: return "GT";
+        case TOK_GT_EQUAL: return "GT_EQUAL";
         case TOK_QBIT: return "QBIT";
         case TOK_QREG: return "QREG";
         case TOK_H: return "H";
@@ -115,8 +121,20 @@ QNStatus qn_lex(const char *source, QNTokenList *out, QNDiagnostic *diag) {
 
         if (c == ':' && source[i+1] == '=') {
             t.kind = TOK_ASSIGN; i += 2; col += 2;
+        } else if (c == '=' && source[i+1] == '=') {
+            t.kind = TOK_EQ_EQ; i += 2; col += 2;
+        } else if (c == '!' && source[i+1] == '=') {
+            t.kind = TOK_BANG_EQUAL; i += 2; col += 2;
+        } else if (c == '<' && source[i+1] == '=') {
+            t.kind = TOK_LT_EQUAL; i += 2; col += 2;
+        } else if (c == '>' && source[i+1] == '=') {
+            t.kind = TOK_GT_EQUAL; i += 2; col += 2;
         } else if (c == '=') {
             t.kind = TOK_EQUAL; ++i; ++col;
+        } else if (c == '<') {
+            t.kind = TOK_LT; ++i; ++col;
+        } else if (c == '>') {
+            t.kind = TOK_GT; ++i; ++col;
         } else if (c == '-' && source[i+1] == '>') {
             t.kind = TOK_ARROW; i += 2; col += 2;
         } else if (c == '[') {

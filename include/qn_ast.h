@@ -28,7 +28,13 @@ typedef enum {
     STMT_U32_ADD,
     STMT_U32_SUB,
     STMT_U32_MUL,
-    STMT_U32_DIV
+    STMT_U32_DIV,
+    STMT_U32_EQ,
+    STMT_U32_NE,
+    STMT_U32_LT,
+    STMT_U32_LE,
+    STMT_U32_GT,
+    STMT_U32_GE
 } QNStmtKind;
 
 typedef struct {
@@ -55,7 +61,7 @@ typedef struct {
             char output[QN_NAME_CAP];
             char left[QN_NAME_CAP];
             char right[QN_NAME_CAP];
-        } u32_add;
+        } scalar_binary;
     } as;
 } QNStmt;
 

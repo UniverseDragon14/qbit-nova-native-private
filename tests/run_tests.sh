@@ -1268,11 +1268,168 @@ test "$(sha256sum "$TMP/u32-stage6-vector-regression.qbc" | awk '{print $1}')" =
 
 echo "U32_ARITHMETIC_PIPELINE=PASS"
 
+echo "=== U32 COMPARISONS + NATIVE BOOL ==="
+
+TRUE_SHA='4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a'
+FALSE_SHA='6e340b9cffb37a989ca544e6bb780a2c78901d3fb33738768511a30617afa01d'
+
+for SPEC in \
+  'eq EQ 57' \
+  'ne NE 58' \
+  'lt LT 59' \
+  'le LE 5a' \
+  'gt GT 5b' \
+  'ge GE 5c'
+do
+  set -- $SPEC
+  NAME="$1"
+  QIR_NAME="$2"
+  OPCODE="$3"
+  SOURCE="examples/u32_compare_${NAME}.qn"
+
+  "$BIN" qir "$SOURCE" > "$TMP/u32-cmp-${NAME}-qir.out"
+  grep -q '^QBIT_NOVA_TYPED_QIR_V03$' \
+    "$TMP/u32-cmp-${NAME}-qir.out"
+  grep -q '^scalar_slots=3$' "$TMP/u32-cmp-${NAME}-qir.out"
+  grep -q '^u32_scalars=2$' "$TMP/u32-cmp-${NAME}-qir.out"
+  grep -q '^bool_scalars=1$' "$TMP/u32-cmp-${NAME}-qir.out"
+  grep -q "U32.${QIR_NAME}.*u32 a@0.*u32 b@1.*bool result@2" \
+    "$TMP/u32-cmp-${NAME}-qir.out"
+  grep -q 'BOOL.EMIT.*bool result@2' \
+    "$TMP/u32-cmp-${NAME}-qir.out"
+
+  "$BIN" check "$SOURCE" > "$TMP/u32-cmp-${NAME}-check.out"
+  grep -q '^instructions=5$' "$TMP/u32-cmp-${NAME}-check.out"
+
+  "$BIN" build "$SOURCE" -o "$TMP/u32-cmp-${NAME}-a.qbc" >/dev/null
+  "$BIN" build "$SOURCE" -o "$TMP/u32-cmp-${NAME}-b.qbc" >/dev/null
+  cmp "$TMP/u32-cmp-${NAME}-a.qbc" "$TMP/u32-cmp-${NAME}-b.qbc"
+  test "$(stat -c '%s' "$TMP/u32-cmp-${NAME}-a.qbc")" -eq 128
+  test "$(od -An -tu1 -j 4 -N 1 "$TMP/u32-cmp-${NAME}-a.qbc" | tr -d '[:space:]')" = 5
+  test "$(od -An -tu1 -j 76 -N 1 "$TMP/u32-cmp-${NAME}-a.qbc" | tr -d '[:space:]')" = 3
+  test "$(od -An -tx1 -j 80 -N 8 "$TMP/u32-cmp-${NAME}-a.qbc" | tr -d '[:space:]')" = '0400000000000000'
+  test "$(od -An -tx1 -j 104 -N 1 "$TMP/u32-cmp-${NAME}-a.qbc" | tr -d '[:space:]')" = "$OPCODE"
+  test "$(od -An -tx1 -j 112 -N 1 "$TMP/u32-cmp-${NAME}-a.qbc" | tr -d '[:space:]')" = '5d'
+
+  "$BIN" run "$SOURCE" --backend cpu \
+    --receipt "$TMP/u32-cmp-${NAME}-cpu.json" \
+    > "$TMP/u32-cmp-${NAME}-cpu.out"
+
+  grep -q '^QBIT_NOVA_NATIVE_TYPED_SCALAR_RUN_V07_STEP3$' \
+    "$TMP/u32-cmp-${NAME}-cpu.out"
+  grep -q '^qvm_operation=typed-scalar-program$' \
+    "$TMP/u32-cmp-${NAME}-cpu.out"
+  grep -q '^comparison_ops=eq,ne,lt,le,gt,ge$' \
+    "$TMP/u32-cmp-${NAME}-cpu.out"
+  grep -q '^comparison_operand_type=u32$' \
+    "$TMP/u32-cmp-${NAME}-cpu.out"
+  grep -q '^comparison_result_type=bool$' \
+    "$TMP/u32-cmp-${NAME}-cpu.out"
+  grep -q '^output_type=bool$' \
+    "$TMP/u32-cmp-${NAME}-cpu.out"
+  grep -q '^emitted_bool=true$' "$TMP/u32-cmp-${NAME}-cpu.out"
+  grep -q "^output_sha256=${TRUE_SHA}$" \
+    "$TMP/u32-cmp-${NAME}-cpu.out"
+
+  grep -q '"marker": "QBIT_NOVA_NATIVE_TYPED_SCALAR_RECEIPT_V07_STEP3"' \
+    "$TMP/u32-cmp-${NAME}-cpu.json"
+  grep -q '"comparison_result_type": "bool"' \
+    "$TMP/u32-cmp-${NAME}-cpu.json"
+  grep -q '"emitted_bool": true' \
+    "$TMP/u32-cmp-${NAME}-cpu.json"
+
+  "$BIN" exec "$TMP/u32-cmp-${NAME}-a.qbc" --backend auto \
+    > "$TMP/u32-cmp-${NAME}-exec.out"
+  grep -q '^qvm_selected_backend=cpu$' \
+    "$TMP/u32-cmp-${NAME}-exec.out"
+  grep -q '^qvm_selection_reason=scalar-operation-not-gpu-eligible$' \
+    "$TMP/u32-cmp-${NAME}-exec.out"
+  grep -q '^qvm_operation=typed-scalar-program$' \
+    "$TMP/u32-cmp-${NAME}-exec.out"
+  grep -q '^emitted_bool=true$' \
+    "$TMP/u32-cmp-${NAME}-exec.out"
+done
+
+"$BIN" run tests/u32_compare_false.qn --backend cpu \
+  --receipt "$TMP/u32-cmp-false.json" \
+  > "$TMP/u32-cmp-false.out"
+grep -q '^emitted_bool=false$' "$TMP/u32-cmp-false.out"
+grep -q "^output_sha256=${FALSE_SHA}$" "$TMP/u32-cmp-false.out"
+grep -q '"emitted_bool": false' "$TMP/u32-cmp-false.json"
+
+for CASE in \
+  bad_bool_arithmetic \
+  bad_bool_comparison \
+  bad_compare_unknown
+do
+  set +e
+  "$BIN" check "tests/${CASE}.qn" \
+    >"$TMP/${CASE}.out" 2>"$TMP/${CASE}.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -ne 0
+  test ! -s "$TMP/${CASE}.out"
+done
+
+grep -q 'QN-E7521' "$TMP/bad_bool_arithmetic.err"
+grep -q 'QN-E7522' "$TMP/bad_bool_comparison.err"
+grep -q 'QN-E7504' "$TMP/bad_compare_unknown.err"
+
+for OPTION in --shots --seed
+do
+  set +e
+  "$BIN" run examples/u32_compare_lt.qn --backend cpu "$OPTION" 1 \
+    >"$TMP/u32-cmp-option.out" 2>"$TMP/u32-cmp-option.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -eq 4
+  grep -q 'QN-E7510' "$TMP/u32-cmp-option.err"
+  test ! -s "$TMP/u32-cmp-option.out"
+done
+
+set +e
+"$BIN" run examples/u32_compare_lt.qn --backend vulkan \
+  >"$TMP/u32-cmp-vulkan.out" 2>"$TMP/u32-cmp-vulkan.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E7201' "$TMP/u32-cmp-vulkan.err"
+test ! -s "$TMP/u32-cmp-vulkan.out"
+
+"$BIN" run examples/u32_compare_lt.qn --backend cpu \
+  --receipt "$TMP/u32-cmp-receipt-a.json" \
+  > "$TMP/u32-cmp-receipt-a.out"
+"$BIN" run examples/u32_compare_lt.qn --backend cpu \
+  --receipt "$TMP/u32-cmp-receipt-b.json" \
+  > "$TMP/u32-cmp-receipt-b.out"
+cmp "$TMP/u32-cmp-receipt-a.json" "$TMP/u32-cmp-receipt-b.json"
+cmp \
+  <(grep -v '^receipt=' "$TMP/u32-cmp-receipt-a.out") \
+  <(grep -v '^receipt=' "$TMP/u32-cmp-receipt-b.out")
+
+"$BIN" build examples/u32_scalar.qn \
+  -o "$TMP/u32-step1-step3-regression.qbc" >/dev/null
+test "$(sha256sum "$TMP/u32-step1-step3-regression.qbc" | awk '{print $1}')" = \
+  '9c7c0638cf508ad5c690f9764395a40679f183ef4d6f5681fb101cb0e025aa12'
+
+"$BIN" build examples/u32_scalar_sub.qn \
+  -o "$TMP/u32-step2-step3-regression.qbc" >/dev/null
+test "$(sha256sum "$TMP/u32-step2-step3-regression.qbc" | awk '{print $1}')" = \
+  'fa5174d59fce3a500a841472eb724216bf22b8c9cb30a604e7600c9e0d78e6d6'
+
+"$BIN" build examples/vector_add_u32.qn \
+  -o "$TMP/u32-stage6-step3-regression.qbc" >/dev/null
+test "$(sha256sum "$TMP/u32-stage6-step3-regression.qbc" | awk '{print $1}')" = \
+  '9f9a624a88200847595c3a5499dc03fe4811bef1676e988fac4ce53a8448642f'
+
+echo "U32_COMPARISONS_BOOL_PIPELINE=PASS"
+
 echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/a.qbc" >/dev/null
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_U32_COMPARISONS_BOOL_V07_STEP3"
 echo "PASS: QBIT_NOVA_U32_ARITHMETIC_V07_STEP2"
 echo "PASS: QBIT_NOVA_TYPED_U32_SCALAR_V07_STEP1"
 echo "PASS: QBIT_NOVA_BOUNDED_GPU_OPERATION_V06_STEP5"

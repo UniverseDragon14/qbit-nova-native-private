@@ -42,6 +42,7 @@ typedef struct {
     bool native_scalar_result;
     uint16_t scalar_output_id;
     uint32_t scalar_output_value;
+    bool scalar_output_is_bool;
     uint8_t scalar_output_digest[32];
     QNHistogramEntry *entries;
     size_t entry_count;
