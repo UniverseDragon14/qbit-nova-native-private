@@ -25,6 +25,8 @@ typedef enum {
     OP_U32_GT = 0x5b,
     OP_U32_GE = 0x5c,
     OP_BOOL_EMIT = 0x5d,
+    OP_JUMP_IF_FALSE = 0x5e,
+    OP_JUMP = 0x5f,
     OP_END = 0x7f
 } QNOpcode;
 
@@ -67,5 +69,6 @@ QNStatus qn_qbc_decode(const uint8_t *data, size_t size, QNBytecode *out,
 bool qn_qbc_is_bounded_u32_vector_add(const QNBytecode *bc);
 bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc);
 bool qn_qbc_is_typed_scalar_program(const QNBytecode *bc);
+bool qn_qbc_has_control_flow(const QNBytecode *bc);
 
 #endif

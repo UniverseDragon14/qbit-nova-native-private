@@ -300,14 +300,24 @@ static QNStatus qn_vm_run_typed_scalar(
     uint32_t values[QN_MAX_SCALARS] = {0};
     bool initialized[QN_MAX_SCALARS] = {false};
     bool emitted = false;
+    bool terminated = false;
     uint16_t emitted_id = 0u;
+    size_t pc = 0u;
+    size_t executed = 0u;
 
-    for (size_t i = 0; i < bc->instruction_count; ++i) {
-        const QNInstruction *ins = &bc->instructions[i];
+    while (pc < bc->instruction_count) {
+        if (++executed > bc->instruction_count) {
+            qn_diag_set_code(diag, "QN-E7542", 0, 0,
+                             "typed scalar control-flow step bound exceeded");
+            return QN_ERR_RUNTIME;
+        }
+
+        const QNInstruction *ins = &bc->instructions[pc];
         switch (ins->opcode) {
             case OP_U32_CONST:
                 values[ins->a] = ins->imm;
                 initialized[ins->a] = true;
+                ++pc;
                 break;
             case OP_U32_ADD:
                 if (!initialized[ins->b] || !initialized[ins->flags]) {
@@ -317,6 +327,7 @@ static QNStatus qn_vm_run_typed_scalar(
                 }
                 values[ins->a] = values[ins->b] + values[ins->flags];
                 initialized[ins->a] = true;
+                ++pc;
                 break;
             case OP_U32_SUB:
                 if (!initialized[ins->b] || !initialized[ins->flags]) {
@@ -326,6 +337,7 @@ static QNStatus qn_vm_run_typed_scalar(
                 }
                 values[ins->a] = values[ins->b] - values[ins->flags];
                 initialized[ins->a] = true;
+                ++pc;
                 break;
             case OP_U32_MUL:
                 if (!initialized[ins->b] || !initialized[ins->flags]) {
@@ -335,6 +347,7 @@ static QNStatus qn_vm_run_typed_scalar(
                 }
                 values[ins->a] = values[ins->b] * values[ins->flags];
                 initialized[ins->a] = true;
+                ++pc;
                 break;
             case OP_U32_DIV:
                 if (!initialized[ins->b] || !initialized[ins->flags]) {
@@ -349,6 +362,7 @@ static QNStatus qn_vm_run_typed_scalar(
                 }
                 values[ins->a] = values[ins->b] / values[ins->flags];
                 initialized[ins->a] = true;
+                ++pc;
                 break;
             case OP_U32_EQ:
             case OP_U32_NE:
@@ -384,6 +398,7 @@ static QNStatus qn_vm_run_typed_scalar(
                         break;
                 }
                 initialized[ins->a] = true;
+                ++pc;
                 break;
             case OP_U32_EMIT:
             case OP_BOOL_EMIT:
@@ -394,19 +409,49 @@ static QNStatus qn_vm_run_typed_scalar(
                 }
                 emitted = true;
                 emitted_id = ins->a;
+                ++pc;
+                break;
+            case OP_JUMP_IF_FALSE:
+                if (!initialized[ins->a] || values[ins->a] > 1u ||
+                    ins->imm <= pc ||
+                    ins->imm >= bc->instruction_count) {
+                    qn_diag_set_code(diag, "QN-E7542", 0, 0,
+                                     "invalid runtime conditional jump state");
+                    return QN_ERR_RUNTIME;
+                }
+                pc = values[ins->a] == 0u
+                    ? (size_t)ins->imm
+                    : pc + 1u;
+                break;
+            case OP_JUMP:
+                if (ins->imm <= pc ||
+                    ins->imm >= bc->instruction_count) {
+                    qn_diag_set_code(diag, "QN-E7542", 0, 0,
+                                     "invalid runtime forward jump target");
+                    return QN_ERR_RUNTIME;
+                }
+                pc = (size_t)ins->imm;
                 break;
             case OP_END:
-                if (i + 1u != bc->instruction_count || !emitted) {
+                if (pc + 1u != bc->instruction_count || !emitted) {
                     qn_diag_set_code(diag, "QN-E7515", 0, 0,
                                      "invalid typed scalar program termination");
                     return QN_ERR_RUNTIME;
                 }
+                terminated = true;
+                pc = bc->instruction_count;
                 break;
             default:
                 qn_diag_set_code(diag, "QN-E7516", 0, 0,
                                  "unexpected opcode in typed scalar VM");
                 return QN_ERR_RUNTIME;
         }
+    }
+
+    if (!terminated || !emitted) {
+        qn_diag_set_code(diag, "QN-E7515", 0, 0,
+                         "typed scalar program did not terminate through END");
+        return QN_ERR_RUNTIME;
     }
 
     out->native_scalar_result = true;
@@ -552,7 +597,16 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
                 case OP_U32_SUB:
                 case OP_U32_MUL:
                 case OP_U32_DIV:
+                case OP_U32_EQ:
+                case OP_U32_NE:
+                case OP_U32_LT:
+                case OP_U32_LE:
+                case OP_U32_GT:
+                case OP_U32_GE:
                 case OP_U32_EMIT:
+                case OP_BOOL_EMIT:
+                case OP_JUMP_IF_FALSE:
+                case OP_JUMP:
                     qn_diag_set_code(
                         diag,
                         "QN-E7415",
@@ -741,8 +795,13 @@ void qn_print_result(const QNBytecode *bc,
         unsigned u32_count = (unsigned)bc->scalar_count - bool_count;
         qn_hex32(result->scalar_output_digest, output_hex);
         if (bc->scalar_bool_mask != 0u) {
-            fprintf(stream, "QBIT_NOVA_NATIVE_TYPED_SCALAR_RUN_V07_STEP3\n");
-            fprintf(stream, "boundary=native_typed_u32_bool_scalar\n");
+            bool control_flow = qn_qbc_has_control_flow(bc);
+            fprintf(stream, "%s\n", control_flow
+                ? "QBIT_NOVA_NATIVE_TYPED_CONTROL_FLOW_RUN_V07_STEP4"
+                : "QBIT_NOVA_NATIVE_TYPED_SCALAR_RUN_V07_STEP3");
+            fprintf(stream, "boundary=%s\n", control_flow
+                ? "native_typed_u32_bool_control_flow"
+                : "native_typed_u32_bool_scalar");
             fprintf(stream, "physical_qpu=false\n");
             fprintf(stream, "qubits=0\n");
             fprintf(stream, "scalar_slots=%u\n", bc->scalar_count);
@@ -754,7 +813,14 @@ void qn_print_result(const QNBytecode *bc,
             fprintf(stream, "guard=allowed\n");
             qn_print_approval_lines(result, stream);
             qn_print_route_lines(result, stream);
-            fprintf(stream, "scalar_contract=typed-u32-bool-v1\n");
+            fprintf(stream, "scalar_contract=%s\n", control_flow
+                ? "typed-u32-bool-ifelse-v1"
+                : "typed-u32-bool-v1");
+            if (control_flow) {
+                fprintf(stream, "control_flow=if-else-forward-only\n");
+                fprintf(stream, "jump_if_false_opcode=0x5e\n");
+                fprintf(stream, "jump_opcode=0x5f\n");
+            }
             fprintf(stream, "comparison_ops=eq,ne,lt,le,gt,ge\n");
             fprintf(stream, "comparison_operand_type=u32\n");
             fprintf(stream, "comparison_result_type=bool\n");
@@ -1026,15 +1092,30 @@ static QNStatus qn_write_typed_scalar_receipt(
                          sizeof(capability_text));
 
     fprintf(stream, "{\n");
-    fprintf(stream, "  \"marker\": \"QBIT_NOVA_NATIVE_TYPED_SCALAR_RECEIPT_V07_STEP3\",\n");
+    bool control_flow = qn_qbc_has_control_flow(bc);
+    fprintf(stream, "  \"marker\": \"%s\",\n",
+            control_flow
+                ? "QBIT_NOVA_NATIVE_TYPED_CONTROL_FLOW_RECEIPT_V07_STEP4"
+                : "QBIT_NOVA_NATIVE_TYPED_SCALAR_RECEIPT_V07_STEP3");
     fprintf(stream, "  \"creator\": \"Universal Dragon Aslam\",\n");
-    fprintf(stream, "  \"boundary\": \"native_typed_u32_bool_scalar\",\n");
+    fprintf(stream, "  \"boundary\": \"%s\",\n",
+            control_flow
+                ? "native_typed_u32_bool_control_flow"
+                : "native_typed_u32_bool_scalar");
     fprintf(stream, "  \"physical_qpu\": false,\n");
     fprintf(stream, "  \"guard\": \"allowed\",\n");
     fprintf(stream, "  \"capabilities\": \"%s\",\n", capability_text);
     qn_write_approval_json(stream, result);
     qn_write_route_json(stream, result);
-    fprintf(stream, "  \"scalar_contract\": \"typed-u32-bool-v1\",\n");
+    fprintf(stream, "  \"scalar_contract\": \"%s\",\n",
+            control_flow
+                ? "typed-u32-bool-ifelse-v1"
+                : "typed-u32-bool-v1");
+    if (control_flow) {
+        fprintf(stream, "  \"control_flow\": \"if-else-forward-only\",\n");
+        fprintf(stream, "  \"jump_if_false_opcode\": \"0x5e\",\n");
+        fprintf(stream, "  \"jump_opcode\": \"0x5f\",\n");
+    }
     fprintf(stream, "  \"comparison_ops\": \"eq,ne,lt,le,gt,ge\",\n");
     fprintf(stream, "  \"comparison_operand_type\": \"u32\",\n");
     fprintf(stream, "  \"comparison_result_type\": \"bool\",\n");

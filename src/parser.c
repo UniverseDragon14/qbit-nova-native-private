@@ -40,8 +40,27 @@ static bool add_stmt(QNProgram *program, QNStmt stmt, QNDiagnostic *diag) {
     return true;
 }
 
+static void qn_stmt_free_contents(QNStmt *stmt) {
+    if (!stmt || stmt->kind != STMT_IF) return;
+    for (size_t i = 0; i < stmt->as.if_stmt.then_count; ++i) {
+        qn_stmt_free_contents(&stmt->as.if_stmt.then_items[i]);
+    }
+    for (size_t i = 0; i < stmt->as.if_stmt.else_count; ++i) {
+        qn_stmt_free_contents(&stmt->as.if_stmt.else_items[i]);
+    }
+    free(stmt->as.if_stmt.then_items);
+    free(stmt->as.if_stmt.else_items);
+    stmt->as.if_stmt.then_items = NULL;
+    stmt->as.if_stmt.else_items = NULL;
+    stmt->as.if_stmt.then_count = 0u;
+    stmt->as.if_stmt.else_count = 0u;
+}
+
 void qn_program_free(QNProgram *program) {
     if (!program) return;
+    for (size_t i = 0; i < program->count; ++i) {
+        qn_stmt_free_contents(&program->items[i]);
+    }
     free(program->items);
     memset(program, 0, sizeof(*program));
 }
@@ -54,6 +73,11 @@ static bool consume_line_end(Parser *p) {
     const QNToken *t = peek(p);
     qn_diag_set(p->diag, t->line, t->column, "expected end of line");
     return false;
+}
+
+static bool consume_branch_line_end(Parser *p) {
+    if (is(p, TOK_RBRACE)) return true;
+    return consume_line_end(p);
 }
 
 static bool parse_target(Parser *p, QNTarget *out) {
@@ -89,6 +113,174 @@ static bool parse_state(const char *text, uint32_t width, uint64_t *basis, QNDia
         v = (v << 1) | (uint64_t)(text[i] - '0');
     }
     *basis = v;
+    return true;
+}
+
+static bool parse_u32_let_after_keyword(Parser *p, QNStmt *s) {
+    s->kind = STMT_U32_LET;
+    const QNToken *name = expect(p, TOK_IDENT, "variable name");
+    if (!name || !expect(p, TOK_COLON, "':'") ||
+        !expect(p, TOK_U32, "u32") ||
+        !expect(p, TOK_EQUAL, "'='")) return false;
+    const QNToken *value = expect(p, TOK_INT, "u32 literal");
+    if (!value) return false;
+    if (value->int_value > UINT32_MAX) {
+        qn_diag_set_code(p->diag, "QN-E7500", value->line, value->column,
+                         "u32 literal exceeds 4294967295");
+        return false;
+    }
+    snprintf(s->as.u32_let.name, sizeof(s->as.u32_let.name),
+             "%s", name->text);
+    s->as.u32_let.value = (uint32_t)value->int_value;
+    return true;
+}
+
+static bool parse_scalar_binary(Parser *p, QNStmt *s) {
+    const QNToken *output = expect(p, TOK_IDENT, "output variable");
+    if (!output || !expect(p, TOK_EQUAL, "'='")) return false;
+    const QNToken *left = expect(p, TOK_IDENT, "left variable");
+    if (!left) return false;
+    if (match(p, TOK_PLUS)) {
+        s->kind = STMT_U32_ADD;
+    } else if (match(p, TOK_MINUS)) {
+        s->kind = STMT_U32_SUB;
+    } else if (match(p, TOK_STAR)) {
+        s->kind = STMT_U32_MUL;
+    } else if (match(p, TOK_SLASH)) {
+        s->kind = STMT_U32_DIV;
+    } else if (match(p, TOK_EQ_EQ)) {
+        s->kind = STMT_U32_EQ;
+    } else if (match(p, TOK_BANG_EQUAL)) {
+        s->kind = STMT_U32_NE;
+    } else if (match(p, TOK_LT)) {
+        s->kind = STMT_U32_LT;
+    } else if (match(p, TOK_LT_EQUAL)) {
+        s->kind = STMT_U32_LE;
+    } else if (match(p, TOK_GT)) {
+        s->kind = STMT_U32_GT;
+    } else if (match(p, TOK_GT_EQUAL)) {
+        s->kind = STMT_U32_GE;
+    } else {
+        const QNToken *t = peek(p);
+        qn_diag_set(p->diag, t->line, t->column,
+                    "expected arithmetic or comparison operator, found %s",
+                    qn_token_kind_name(t->kind));
+        return false;
+    }
+    const QNToken *right = expect(p, TOK_IDENT, "right variable");
+    if (!right) return false;
+    snprintf(s->as.scalar_binary.output, sizeof(s->as.scalar_binary.output),
+             "%s", output->text);
+    snprintf(s->as.scalar_binary.left, sizeof(s->as.scalar_binary.left),
+             "%s", left->text);
+    snprintf(s->as.scalar_binary.right, sizeof(s->as.scalar_binary.right),
+             "%s", right->text);
+    return true;
+}
+
+static bool parse_branch_statement(Parser *p, QNStmt *s) {
+    const QNToken *start = peek(p);
+    memset(s, 0, sizeof(*s));
+    s->line = start->line;
+    s->column = start->column;
+
+    if (match(p, TOK_IF)) {
+        qn_diag_set_code(p->diag, "QN-E7536", start->line, start->column,
+                         "nested if is not enabled in Stage 7 Step 4");
+        return false;
+    }
+    if (match(p, TOK_LET)) {
+        return parse_u32_let_after_keyword(p, s);
+    }
+    if (is(p, TOK_IDENT)) {
+        return parse_scalar_binary(p, s);
+    }
+    if (match(p, TOK_EMIT)) {
+        s->kind = STMT_EMIT;
+        const QNToken *name = expect(p, TOK_IDENT, "result name");
+        if (!name) return false;
+        snprintf(s->as.emit.name, sizeof(s->as.emit.name), "%s", name->text);
+        return true;
+    }
+
+    qn_diag_set_code(p->diag, "QN-E7537", start->line, start->column,
+                     "Step4 if/else branches permit only let, scalar expressions, and emit");
+    return false;
+}
+
+static bool parse_scalar_block(Parser *p,
+                               QNStmt **items_out,
+                               size_t *count_out) {
+    QNProgram block = {0};
+    while (match(p, TOK_NEWLINE)) {}
+
+    while (!is(p, TOK_RBRACE)) {
+        if (is(p, TOK_EOF)) {
+            const QNToken *t = peek(p);
+            qn_diag_set_code(p->diag, "QN-E7533", t->line, t->column,
+                             "unterminated if/else block; expected '}'");
+            qn_program_free(&block);
+            return false;
+        }
+
+        QNStmt stmt;
+        if (!parse_branch_statement(p, &stmt) ||
+            !consume_branch_line_end(p) ||
+            !add_stmt(&block, stmt, p->diag)) {
+            qn_stmt_free_contents(&stmt);
+            qn_program_free(&block);
+            return false;
+        }
+        while (match(p, TOK_NEWLINE)) {}
+    }
+
+    (void)match(p, TOK_RBRACE);
+    *items_out = block.items;
+    *count_out = block.count;
+    return true;
+}
+
+static bool parse_if_after_keyword(Parser *p, QNStmt *s) {
+    s->kind = STMT_IF;
+    const QNToken *condition = expect(p, TOK_IDENT, "bool condition variable");
+    if (!condition) return false;
+    snprintf(s->as.if_stmt.condition, sizeof(s->as.if_stmt.condition),
+             "%s", condition->text);
+
+    if (!match(p, TOK_LBRACE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7533", t->line, t->column,
+                         "expected '{' to start if block");
+        return false;
+    }
+    if (!parse_scalar_block(p,
+                            &s->as.if_stmt.then_items,
+                            &s->as.if_stmt.then_count)) {
+        qn_stmt_free_contents(s);
+        return false;
+    }
+
+    while (match(p, TOK_NEWLINE)) {}
+    if (!match(p, TOK_ELSE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7532", t->line, t->column,
+                         "Stage 7 Step 4 requires an else block");
+        qn_stmt_free_contents(s);
+        return false;
+    }
+    if (!match(p, TOK_LBRACE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7533", t->line, t->column,
+                         "expected '{' to start else block");
+        qn_stmt_free_contents(s);
+        return false;
+    }
+    if (!parse_scalar_block(p,
+                            &s->as.if_stmt.else_items,
+                            &s->as.if_stmt.else_count)) {
+        qn_stmt_free_contents(s);
+        return false;
+    }
     return true;
 }
 
@@ -160,40 +352,24 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             snprintf(s.as.emit.name, sizeof(s.as.emit.name), "%s", name->text);
         } else if (match(&p, TOK_REQUIRES)) {
             s.kind = STMT_REQUIRES;
-            const QNToken *first =
-                expect(&p, TOK_IDENT, "capability name");
+            const QNToken *first = expect(&p, TOK_IDENT, "capability name");
             if (!first) goto fail;
 
             if (match(&p, TOK_DOT)) {
-                const QNToken *second =
-                    expect(&p, TOK_IDENT, "capability suffix");
+                const QNToken *second = expect(&p, TOK_IDENT, "capability suffix");
                 if (!second) goto fail;
-
-                int written = snprintf(
-                    s.as.requires.capability,
-                    sizeof(s.as.requires.capability),
-                    "%s.%s",
-                    first->text,
-                    second->text
-                );
+                int written = snprintf(s.as.requires.capability,
+                                       sizeof(s.as.requires.capability),
+                                       "%s.%s", first->text, second->text);
                 if (written < 0 ||
-                    (size_t)written >=
-                    sizeof(s.as.requires.capability)) {
-                    qn_diag_set(
-                        diag,
-                        first->line,
-                        first->column,
-                        "capability name is too long"
-                    );
+                    (size_t)written >= sizeof(s.as.requires.capability)) {
+                    qn_diag_set(diag, first->line, first->column,
+                                "capability name is too long");
                     goto fail;
                 }
             } else {
-                snprintf(
-                    s.as.requires.capability,
-                    sizeof(s.as.requires.capability),
-                    "%s",
-                    first->text
-                );
+                snprintf(s.as.requires.capability,
+                         sizeof(s.as.requires.capability), "%s", first->text);
             }
         } else if (match(&p, TOK_SEED) || match(&p, TOK_SHOTS)) {
             QNTokenKind k = prev(&p)->kind;
@@ -202,79 +378,35 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             if (!n) goto fail;
             s.as.number.value = n->int_value;
         } else if (match(&p, TOK_LET)) {
-            s.kind = STMT_U32_LET;
-            const QNToken *name = expect(&p, TOK_IDENT, "variable name");
-            if (!name || !expect(&p, TOK_COLON, "':'") ||
-                !expect(&p, TOK_U32, "u32") ||
-                !expect(&p, TOK_EQUAL, "'='")) goto fail;
-            const QNToken *value = expect(&p, TOK_INT, "u32 literal");
-            if (!value) goto fail;
-            if (value->int_value > UINT32_MAX) {
-                qn_diag_set_code(diag, "QN-E7500", value->line, value->column,
-                                 "u32 literal exceeds 4294967295");
-                goto fail;
-            }
-            snprintf(s.as.u32_let.name, sizeof(s.as.u32_let.name),
-                     "%s", name->text);
-            s.as.u32_let.value = (uint32_t)value->int_value;
+            if (!parse_u32_let_after_keyword(&p, &s)) goto fail;
+        } else if (match(&p, TOK_IF)) {
+            if (!parse_if_after_keyword(&p, &s)) goto fail;
         } else if (is(&p, TOK_IDENT)) {
-            const QNToken *output = expect(&p, TOK_IDENT, "output variable");
-            if (!output || !expect(&p, TOK_EQUAL, "'='")) goto fail;
-            const QNToken *left = expect(&p, TOK_IDENT, "left variable");
-            if (!left) goto fail;
-            if (match(&p, TOK_PLUS)) {
-                s.kind = STMT_U32_ADD;
-            } else if (match(&p, TOK_MINUS)) {
-                s.kind = STMT_U32_SUB;
-            } else if (match(&p, TOK_STAR)) {
-                s.kind = STMT_U32_MUL;
-            } else if (match(&p, TOK_SLASH)) {
-                s.kind = STMT_U32_DIV;
-            } else if (match(&p, TOK_EQ_EQ)) {
-                s.kind = STMT_U32_EQ;
-            } else if (match(&p, TOK_BANG_EQUAL)) {
-                s.kind = STMT_U32_NE;
-            } else if (match(&p, TOK_LT)) {
-                s.kind = STMT_U32_LT;
-            } else if (match(&p, TOK_LT_EQUAL)) {
-                s.kind = STMT_U32_LE;
-            } else if (match(&p, TOK_GT)) {
-                s.kind = STMT_U32_GT;
-            } else if (match(&p, TOK_GT_EQUAL)) {
-                s.kind = STMT_U32_GE;
-            } else {
-                const QNToken *t = peek(&p);
-                qn_diag_set(diag, t->line, t->column,
-                            "expected arithmetic or comparison operator, found %s",
-                            qn_token_kind_name(t->kind));
-                goto fail;
-            }
-            const QNToken *right = expect(&p, TOK_IDENT, "right variable");
-            if (!right) goto fail;
-            snprintf(s.as.scalar_binary.output, sizeof(s.as.scalar_binary.output),
-                     "%s", output->text);
-            snprintf(s.as.scalar_binary.left, sizeof(s.as.scalar_binary.left),
-                     "%s", left->text);
-            snprintf(s.as.scalar_binary.right, sizeof(s.as.scalar_binary.right),
-                     "%s", right->text);
+            if (!parse_scalar_binary(&p, &s)) goto fail;
         } else if (match(&p, TOK_VECTOR_ADD_U32)) {
             s.kind = STMT_VECTOR_ADD_U32;
             if (!expect(&p, TOK_ARROW, "'->'")) goto fail;
-            const QNToken *output =
-                expect(&p, TOK_IDENT, "vector result name");
+            const QNToken *output = expect(&p, TOK_IDENT, "vector result name");
             if (!output) goto fail;
-            snprintf(
-                s.as.vector_add_u32.output,
-                sizeof(s.as.vector_add_u32.output),
-                "%s",
-                output->text
-            );
+            snprintf(s.as.vector_add_u32.output,
+                     sizeof(s.as.vector_add_u32.output),
+                     "%s", output->text);
         } else {
-            qn_diag_set(diag, start->line, start->column, "unexpected token %s", qn_token_kind_name(start->kind));
+            qn_diag_set(diag, start->line, start->column,
+                        "unexpected token %s", qn_token_kind_name(start->kind));
             goto fail;
         }
 
-        if (!consume_line_end(&p) || !add_stmt(out, s, diag)) goto fail;
+        if (!consume_line_end(&p) || !add_stmt(out, s, diag)) {
+            qn_stmt_free_contents(&s);
+            goto fail;
+        }
+        if (s.kind == STMT_IF && !is(&p, TOK_EOF)) {
+            const QNToken *t = peek(&p);
+            qn_diag_set_code(diag, "QN-E7535", t->line, t->column,
+                             "Stage 7 Step 4 if/else must terminate the scalar program");
+            goto fail;
+        }
     }
     return QN_OK;
 

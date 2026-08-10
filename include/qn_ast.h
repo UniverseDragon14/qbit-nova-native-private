@@ -34,10 +34,13 @@ typedef enum {
     STMT_U32_LT,
     STMT_U32_LE,
     STMT_U32_GT,
-    STMT_U32_GE
+    STMT_U32_GE,
+    STMT_IF
 } QNStmtKind;
 
-typedef struct {
+typedef struct QNStmt QNStmt;
+
+struct QNStmt {
     QNStmtKind kind;
     int line;
     int column;
@@ -62,8 +65,15 @@ typedef struct {
             char left[QN_NAME_CAP];
             char right[QN_NAME_CAP];
         } scalar_binary;
+        struct {
+            char condition[QN_NAME_CAP];
+            QNStmt *then_items;
+            size_t then_count;
+            QNStmt *else_items;
+            size_t else_count;
+        } if_stmt;
     } as;
-} QNStmt;
+};
 
 typedef struct {
     QNStmt *items;

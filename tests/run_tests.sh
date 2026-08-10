@@ -1424,11 +1424,214 @@ test "$(sha256sum "$TMP/u32-stage6-step3-regression.qbc" | awk '{print $1}')" = 
 
 echo "U32_COMPARISONS_BOOL_PIPELINE=PASS"
 
+echo "=== NATIVE IF ELSE CONTROL FLOW ==="
+
+U32_10_SHA='075de2b906dbd7066da008cab735bee896370154603579a50122f9b88545bd45'
+U32_20_SHA='447e12701a0d03cf90a4ad7f02f1a045b35d284e26fe520440edb116d76bf700'
+U32_17_SHA='84fc05949dc1e486652a4ed316afb6434e9437eb30b714594a1d0b4205776602'
+
+"$BIN" qir examples/u32_if_else_true.qn > "$TMP/u32-if-true-qir.out"
+grep -q '^QBIT_NOVA_TYPED_QIR_V04_STEP4$' "$TMP/u32-if-true-qir.out"
+grep -q 'JUMP.IF.FALSE.*bool less@2.*-> 6' "$TMP/u32-if-true-qir.out"
+grep -q 'JUMP.*-> 7' "$TMP/u32-if-true-qir.out"
+
+"$BIN" check examples/u32_if_else_true.qn > "$TMP/u32-if-true-check.out"
+grep -q '^instructions=8$' "$TMP/u32-if-true-check.out"
+
+"$BIN" build examples/u32_if_else_true.qn \
+  -o "$TMP/u32-if-true-a.qbc" >/dev/null
+"$BIN" build examples/u32_if_else_true.qn \
+  -o "$TMP/u32-if-true-b.qbc" >/dev/null
+cmp "$TMP/u32-if-true-a.qbc" "$TMP/u32-if-true-b.qbc"
+test "$(stat -c '%s' "$TMP/u32-if-true-a.qbc")" -eq 152
+test "$(od -An -tu1 -j 4 -N 1 "$TMP/u32-if-true-a.qbc" | tr -d '[:space:]')" = 6
+test "$(od -An -tu1 -j 6 -N 1 "$TMP/u32-if-true-a.qbc" | tr -d '[:space:]')" = 88
+test "$(od -An -tu1 -j 76 -N 1 "$TMP/u32-if-true-a.qbc" | tr -d '[:space:]')" = 3
+test "$(od -An -tx1 -j 80 -N 8 "$TMP/u32-if-true-a.qbc" | tr -d '[:space:]')" = '0400000000000000'
+test "$(od -An -tx1 -j 112 -N 1 "$TMP/u32-if-true-a.qbc" | tr -d '[:space:]')" = '5e'
+test "$(od -An -tx1 -j 128 -N 1 "$TMP/u32-if-true-a.qbc" | tr -d '[:space:]')" = '5f'
+
+"$BIN" run examples/u32_if_else_true.qn --backend cpu \
+  --receipt "$TMP/u32-if-true.json" \
+  > "$TMP/u32-if-true.out"
+grep -q '^QBIT_NOVA_NATIVE_TYPED_CONTROL_FLOW_RUN_V07_STEP4$' \
+  "$TMP/u32-if-true.out"
+grep -q '^boundary=native_typed_u32_bool_control_flow$' \
+  "$TMP/u32-if-true.out"
+grep -q '^qvm_operation=typed-control-flow-program$' \
+  "$TMP/u32-if-true.out"
+grep -q '^scalar_contract=typed-u32-bool-ifelse-v1$' \
+  "$TMP/u32-if-true.out"
+grep -q '^control_flow=if-else-forward-only$' \
+  "$TMP/u32-if-true.out"
+grep -q '^output_type=u32$' "$TMP/u32-if-true.out"
+grep -q '^emitted_u32=10$' "$TMP/u32-if-true.out"
+grep -q "^output_sha256=${U32_10_SHA}$" "$TMP/u32-if-true.out"
+grep -q '"marker": "QBIT_NOVA_NATIVE_TYPED_CONTROL_FLOW_RECEIPT_V07_STEP4"' \
+  "$TMP/u32-if-true.json"
+grep -q '"control_flow": "if-else-forward-only"' \
+  "$TMP/u32-if-true.json"
+
+"$BIN" run examples/u32_if_else_false.qn --backend cpu \
+  --receipt "$TMP/u32-if-false.json" \
+  > "$TMP/u32-if-false.out"
+grep -q '^emitted_u32=20$' "$TMP/u32-if-false.out"
+grep -q "^output_sha256=${U32_20_SHA}$" "$TMP/u32-if-false.out"
+
+"$BIN" run examples/u32_if_else_branch_local.qn --backend cpu \
+  --receipt "$TMP/u32-if-local.json" \
+  > "$TMP/u32-if-local.out"
+grep -q '^emitted_u32=17$' "$TMP/u32-if-local.out"
+grep -q "^output_sha256=${U32_17_SHA}$" "$TMP/u32-if-local.out"
+
+for SPEC in \
+  'bad_if_u32_condition QN-E7531' \
+  'bad_if_unknown_condition QN-E7530' \
+  'bad_if_missing_else QN-E7532' \
+  'bad_if_missing_brace QN-E7533' \
+  'bad_if_output_type_mismatch QN-E7538' \
+  'bad_if_branch_without_emit QN-E7534' \
+  'bad_if_nested QN-E7536'
+do
+  set -- $SPEC
+  CASE="$1"
+  CODE="$2"
+  set +e
+  "$BIN" check "tests/${CASE}.qn" \
+    >"$TMP/${CASE}.out" 2>"$TMP/${CASE}.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -ne 0
+  test ! -s "$TMP/${CASE}.out"
+  grep -q "$CODE" "$TMP/${CASE}.err"
+done
+
+for OPTION in --shots --seed
+do
+  set +e
+  "$BIN" run examples/u32_if_else_true.qn --backend cpu "$OPTION" 1 \
+    >"$TMP/u32-if-option.out" 2>"$TMP/u32-if-option.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -eq 4
+  grep -q 'QN-E7510' "$TMP/u32-if-option.err"
+  test ! -s "$TMP/u32-if-option.out"
+done
+
+set +e
+"$BIN" run examples/u32_if_else_true.qn --backend vulkan \
+  >"$TMP/u32-if-vulkan.out" 2>"$TMP/u32-if-vulkan.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E7201' "$TMP/u32-if-vulkan.err"
+test ! -s "$TMP/u32-if-vulkan.out"
+
+"$BIN" exec "$TMP/u32-if-true-a.qbc" --backend auto \
+  > "$TMP/u32-if-exec-auto.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/u32-if-exec-auto.out"
+grep -q '^qvm_selection_reason=scalar-operation-not-gpu-eligible$' \
+  "$TMP/u32-if-exec-auto.out"
+grep -q '^qvm_operation=typed-control-flow-program$' \
+  "$TMP/u32-if-exec-auto.out"
+grep -q '^emitted_u32=10$' "$TMP/u32-if-exec-auto.out"
+
+"$BIN" run examples/u32_if_else_true.qn --backend cpu \
+  --receipt "$TMP/u32-if-receipt-a.json" \
+  > "$TMP/u32-if-receipt-a.out"
+"$BIN" run examples/u32_if_else_true.qn --backend cpu \
+  --receipt "$TMP/u32-if-receipt-b.json" \
+  > "$TMP/u32-if-receipt-b.out"
+cmp "$TMP/u32-if-receipt-a.json" "$TMP/u32-if-receipt-b.json"
+cmp \
+  <(grep -v '^receipt=' "$TMP/u32-if-receipt-a.out") \
+  <(grep -v '^receipt=' "$TMP/u32-if-receipt-b.out")
+
+cp "$TMP/u32-if-true-a.qbc" "$TMP/u32-if-backward.qbc"
+python3 - "$TMP/u32-if-backward.qbc" <<'PY'
+import struct
+import sys
+p = sys.argv[1]
+with open(p, 'r+b') as f:
+    f.seek(116)
+    f.write(struct.pack('<I', 3))
+PY
+set +e
+"$BIN" exec "$TMP/u32-if-backward.qbc" --backend cpu \
+  >"$TMP/u32-if-backward.out" 2>"$TMP/u32-if-backward.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+grep -q 'QN-E7541' "$TMP/u32-if-backward.err"
+test ! -s "$TMP/u32-if-backward.out"
+
+cp "$TMP/u32-if-true-a.qbc" "$TMP/u32-if-range.qbc"
+python3 - "$TMP/u32-if-range.qbc" <<'PY'
+import struct
+import sys
+p = sys.argv[1]
+with open(p, 'r+b') as f:
+    f.seek(116)
+    f.write(struct.pack('<I', 99))
+PY
+set +e
+"$BIN" exec "$TMP/u32-if-range.qbc" --backend cpu \
+  >"$TMP/u32-if-range.out" 2>"$TMP/u32-if-range.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+grep -q 'QN-E7541' "$TMP/u32-if-range.err"
+test ! -s "$TMP/u32-if-range.out"
+
+cp "$TMP/u32-if-true-a.qbc" "$TMP/u32-if-v5-tamper.qbc"
+python3 - "$TMP/u32-if-v5-tamper.qbc" <<'PY'
+import struct
+import sys
+p = sys.argv[1]
+with open(p, 'r+b') as f:
+    f.seek(4)
+    f.write(struct.pack('<H', 5))
+PY
+set +e
+"$BIN" exec "$TMP/u32-if-v5-tamper.qbc" --backend cpu \
+  >"$TMP/u32-if-v5-tamper.out" 2>"$TMP/u32-if-v5-tamper.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+grep -q 'QN-E7540' "$TMP/u32-if-v5-tamper.err"
+test ! -s "$TMP/u32-if-v5-tamper.out"
+
+# Frozen QBC compatibility: every previously frozen scalar/vector artifact
+# remains byte-for-byte unchanged.
+for SPEC in \
+  'examples/u32_scalar.qn 9c7c0638cf508ad5c690f9764395a40679f183ef4d6f5681fb101cb0e025aa12' \
+  'examples/u32_scalar_sub.qn fa5174d59fce3a500a841472eb724216bf22b8c9cb30a604e7600c9e0d78e6d6' \
+  'examples/u32_scalar_mul.qn e1d0d2f4814dfbb914eaba3ed1330965a4b11bc2d76f6d4dbfe3af051e4079d8' \
+  'examples/u32_scalar_div.qn 3bec38d21273192423967cc11520c4206e1409b245a37bd11c31cf0514af14d9' \
+  'examples/u32_compare_eq.qn 00ee1eca5e1a469cf14446b571f4b0287dea322b799b0a747994383469397014' \
+  'examples/u32_compare_ne.qn 2640ce131b1bf743665c69e319f5d83ecdb9467510fa99d66f2a4912b65e12fc' \
+  'examples/u32_compare_lt.qn 8d5b31294afb0c6970e53e2cb6069d7edb9f5454ea94e0f968a4d88a32542293' \
+  'examples/u32_compare_le.qn 053044f80ed3925bdca779e3eb4b6e8fea7cd6b65112b71849e2445570147d3b' \
+  'examples/u32_compare_gt.qn 3b11c46a881e5b1bc0e37570e450ba898769f1d1782a7619c2440785eee34576' \
+  'examples/u32_compare_ge.qn c25981d35b6ebc7d5ea281c6fc1cb527ebe9ed256bd41ff5c0c7d1c0d85d04aa' \
+  'examples/vector_add_u32.qn 9f9a624a88200847595c3a5499dc03fe4811bef1676e988fac4ce53a8448642f'
+do
+  set -- $SPEC
+  SOURCE="$1"
+  EXPECTED_SHA="$2"
+  OUT="$TMP/step4-regression-$(basename "$SOURCE" .qn).qbc"
+  "$BIN" build "$SOURCE" -o "$OUT" >/dev/null
+  test "$(sha256sum "$OUT" | awk '{print $1}')" = "$EXPECTED_SHA"
+done
+
+echo "NATIVE_IF_ELSE_CONTROL_FLOW=PASS"
+
 echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/a.qbc" >/dev/null
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_IF_ELSE_CONTROL_FLOW_V07_STEP4"
 echo "PASS: QBIT_NOVA_U32_COMPARISONS_BOOL_V07_STEP3"
 echo "PASS: QBIT_NOVA_U32_ARITHMETIC_V07_STEP2"
 echo "PASS: QBIT_NOVA_TYPED_U32_SCALAR_V07_STEP1"

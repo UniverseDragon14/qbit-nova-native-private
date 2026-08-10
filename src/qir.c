@@ -150,6 +150,274 @@ static unsigned scalar_bool_count(const QNQIRProgram *qir) {
     return count;
 }
 
+
+typedef struct {
+    char name[QN_NAME_CAP];
+    uint16_t id;
+    QNQIRType type;
+} QNBranchBinding;
+
+typedef struct {
+    QNBranchBinding items[QN_MAX_SCALARS];
+    uint16_t count;
+} QNBranchScope;
+
+static void branch_scope_init(QNBranchScope *scope,
+                              const QNQIRProgram *qir,
+                              uint16_t outer_count) {
+    memset(scope, 0, sizeof(*scope));
+    for (uint16_t i = 0; i < outer_count; ++i) {
+        QNBranchBinding *binding = &scope->items[scope->count++];
+        snprintf(binding->name, sizeof(binding->name), "%s",
+                 qir->scalars[i].name);
+        binding->id = i;
+        binding->type = qir->scalars[i].type;
+    }
+}
+
+static int branch_scope_find(const QNBranchScope *scope,
+                             const char *name) {
+    for (uint16_t i = 0; i < scope->count; ++i) {
+        if (strcmp(scope->items[i].name, name) == 0) return (int)i;
+    }
+    return -1;
+}
+
+static int branch_scope_declare(QNQIRProgram *qir,
+                                QNBranchScope *scope,
+                                const char *name,
+                                QNQIRType type,
+                                int line,
+                                int column,
+                                QNDiagnostic *diag) {
+    if (branch_scope_find(scope, name) >= 0) {
+        qn_diag_set_code(diag, "QN-E7501", line, column,
+                         "duplicate scalar variable '%s'", name);
+        return -1;
+    }
+    if (qir->scalar_count >= QN_MAX_SCALARS ||
+        scope->count >= QN_MAX_SCALARS) {
+        qn_diag_set_code(diag, "QN-E7502", line, column,
+                         "scalar variable limit exceeded (%u)",
+                         QN_MAX_SCALARS);
+        return -1;
+    }
+
+    uint16_t id = qir->scalar_count++;
+    snprintf(qir->scalars[id].name,
+             sizeof(qir->scalars[id].name), "%s", name);
+    qir->scalars[id].type = type;
+    if (type == QIR_TYPE_BOOL) {
+        qir->scalar_bool_mask |= UINT64_C(1) << id;
+    }
+
+    QNBranchBinding *binding = &scope->items[scope->count++];
+    snprintf(binding->name, sizeof(binding->name), "%s", name);
+    binding->id = id;
+    binding->type = type;
+    return (int)id;
+}
+
+static QNQIRValue branch_scalar_value(const QNQIRProgram *qir,
+                                      const QNBranchBinding *binding) {
+    return scalar_value(qir, binding->id);
+}
+
+static bool compile_scalar_branch(QNQIRProgram *qir,
+                                  const QNStmt *items,
+                                  size_t count,
+                                  uint16_t outer_count,
+                                  QNQIRType *emitted_type,
+                                  QNDiagnostic *diag) {
+    QNBranchScope scope;
+    branch_scope_init(&scope, qir, outer_count);
+    bool emitted = false;
+    *emitted_type = QIR_TYPE_NONE;
+
+    for (size_t i = 0; i < count; ++i) {
+        const QNStmt *stmt = &items[i];
+        QNQIRInstruction ins;
+        memset(&ins, 0, sizeof(ins));
+        ins.line = stmt->line;
+        ins.column = stmt->column;
+
+        if (emitted) {
+            qn_diag_set_code(diag, "QN-E7534", stmt->line, stmt->column,
+                             "if/else branch must terminate at emit");
+            return false;
+        }
+
+        switch (stmt->kind) {
+            case STMT_U32_LET: {
+                int id = branch_scope_declare(
+                    qir, &scope, stmt->as.u32_let.name,
+                    QIR_TYPE_U32, stmt->line, stmt->column, diag
+                );
+                if (id < 0) return false;
+                qir->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
+                ins.opcode = QIR_OP_U32_CONST;
+                ins.out = scalar_value(qir, (uint16_t)id);
+                ins.imm = stmt->as.u32_let.value;
+                if (!append_qir(qir, ins, diag)) return false;
+                break;
+            }
+
+            case STMT_U32_ADD:
+            case STMT_U32_SUB:
+            case STMT_U32_MUL:
+            case STMT_U32_DIV: {
+                const char *op = stmt->kind == STMT_U32_ADD ? "+" :
+                                 stmt->kind == STMT_U32_SUB ? "-" :
+                                 stmt->kind == STMT_U32_MUL ? "*" : "/";
+                int left_index = branch_scope_find(
+                    &scope, stmt->as.scalar_binary.left
+                );
+                int right_index = branch_scope_find(
+                    &scope, stmt->as.scalar_binary.right
+                );
+                if (left_index < 0 || right_index < 0) {
+                    qn_diag_set_code(diag, "QN-E7504",
+                                     stmt->line, stmt->column,
+                                     "unknown or uninitialized scalar in '%s = %s %s %s'",
+                                     stmt->as.scalar_binary.output,
+                                     stmt->as.scalar_binary.left,
+                                     op,
+                                     stmt->as.scalar_binary.right);
+                    return false;
+                }
+                const QNBranchBinding *left = &scope.items[left_index];
+                const QNBranchBinding *right = &scope.items[right_index];
+                if (left->type != QIR_TYPE_U32 ||
+                    right->type != QIR_TYPE_U32) {
+                    qn_diag_set_code(diag, "QN-E7521",
+                                     stmt->line, stmt->column,
+                                     "u32 arithmetic '%s' requires u32 operands; got %s and %s",
+                                     op,
+                                     qn_qir_type_name(left->type),
+                                     qn_qir_type_name(right->type));
+                    return false;
+                }
+                int id = branch_scope_declare(
+                    qir, &scope, stmt->as.scalar_binary.output,
+                    QIR_TYPE_U32, stmt->line, stmt->column, diag
+                );
+                if (id < 0) return false;
+                qir->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
+                ins.opcode = stmt->kind == STMT_U32_ADD ? QIR_OP_U32_ADD :
+                             stmt->kind == STMT_U32_SUB ? QIR_OP_U32_SUB :
+                             stmt->kind == STMT_U32_MUL ? QIR_OP_U32_MUL :
+                                                           QIR_OP_U32_DIV;
+                ins.a = branch_scalar_value(qir, left);
+                ins.b = branch_scalar_value(qir, right);
+                ins.out = scalar_value(qir, (uint16_t)id);
+                if (!append_qir(qir, ins, diag)) return false;
+                break;
+            }
+
+            case STMT_U32_EQ:
+            case STMT_U32_NE:
+            case STMT_U32_LT:
+            case STMT_U32_LE:
+            case STMT_U32_GT:
+            case STMT_U32_GE: {
+                const char *op = stmt->kind == STMT_U32_EQ ? "==" :
+                                 stmt->kind == STMT_U32_NE ? "!=" :
+                                 stmt->kind == STMT_U32_LT ? "<" :
+                                 stmt->kind == STMT_U32_LE ? "<=" :
+                                 stmt->kind == STMT_U32_GT ? ">" : ">=";
+                int left_index = branch_scope_find(
+                    &scope, stmt->as.scalar_binary.left
+                );
+                int right_index = branch_scope_find(
+                    &scope, stmt->as.scalar_binary.right
+                );
+                if (left_index < 0 || right_index < 0) {
+                    qn_diag_set_code(diag, "QN-E7504",
+                                     stmt->line, stmt->column,
+                                     "unknown or uninitialized scalar in '%s = %s %s %s'",
+                                     stmt->as.scalar_binary.output,
+                                     stmt->as.scalar_binary.left,
+                                     op,
+                                     stmt->as.scalar_binary.right);
+                    return false;
+                }
+                const QNBranchBinding *left = &scope.items[left_index];
+                const QNBranchBinding *right = &scope.items[right_index];
+                if (left->type != QIR_TYPE_U32 ||
+                    right->type != QIR_TYPE_U32) {
+                    qn_diag_set_code(diag, "QN-E7522",
+                                     stmt->line, stmt->column,
+                                     "u32 comparison '%s' requires u32 operands; got %s and %s",
+                                     op,
+                                     qn_qir_type_name(left->type),
+                                     qn_qir_type_name(right->type));
+                    return false;
+                }
+                int id = branch_scope_declare(
+                    qir, &scope, stmt->as.scalar_binary.output,
+                    QIR_TYPE_BOOL, stmt->line, stmt->column, diag
+                );
+                if (id < 0) return false;
+                qir->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
+                ins.opcode = stmt->kind == STMT_U32_EQ ? QIR_OP_U32_EQ :
+                             stmt->kind == STMT_U32_NE ? QIR_OP_U32_NE :
+                             stmt->kind == STMT_U32_LT ? QIR_OP_U32_LT :
+                             stmt->kind == STMT_U32_LE ? QIR_OP_U32_LE :
+                             stmt->kind == STMT_U32_GT ? QIR_OP_U32_GT :
+                                                         QIR_OP_U32_GE;
+                ins.a = branch_scalar_value(qir, left);
+                ins.b = branch_scalar_value(qir, right);
+                ins.out = scalar_value(qir, (uint16_t)id);
+                if (!append_qir(qir, ins, diag)) return false;
+                break;
+            }
+
+            case STMT_EMIT: {
+                int binding_index = branch_scope_find(
+                    &scope, stmt->as.emit.name
+                );
+                if (binding_index < 0) {
+                    qn_diag_set_code(diag, "QN-E7504",
+                                     stmt->line, stmt->column,
+                                     "emit references unknown scalar variable '%s'",
+                                     stmt->as.emit.name);
+                    return false;
+                }
+                const QNBranchBinding *binding =
+                    &scope.items[binding_index];
+                ins.a = branch_scalar_value(qir, binding);
+                ins.opcode = binding->type == QIR_TYPE_BOOL
+                    ? QIR_OP_BOOL_EMIT
+                    : QIR_OP_U32_EMIT;
+                qir->capability_mask |= QN_CAP_EVIDENCE_EMIT;
+                if (!append_qir(qir, ins, diag)) return false;
+                emitted = true;
+                *emitted_type = binding->type;
+                break;
+            }
+
+            case STMT_IF:
+                qn_diag_set_code(diag, "QN-E7536",
+                                 stmt->line, stmt->column,
+                                 "nested if is not enabled in Stage 7 Step 4");
+                return false;
+
+            default:
+                qn_diag_set_code(diag, "QN-E7537",
+                                 stmt->line, stmt->column,
+                                 "unsupported statement inside Step4 if/else block");
+                return false;
+        }
+    }
+
+    if (!emitted) {
+        qn_diag_set_code(diag, "QN-E7534", 1, 1,
+                         "each Step4 if/else branch must terminate with emit");
+        return false;
+    }
+    return true;
+}
+
 void qn_qir_free(QNQIRProgram *qir) {
     if (!qir) return;
     free(qir->instructions);
@@ -191,6 +459,8 @@ const char *qn_qir_opcode_name(QNQIROpcode opcode) {
         case QIR_OP_U32_GT: return "U32.GT";
         case QIR_OP_U32_GE: return "U32.GE";
         case QIR_OP_BOOL_EMIT: return "BOOL.EMIT";
+        case QIR_OP_JUMP_IF_FALSE: return "JUMP.IF.FALSE";
+        case QIR_OP_JUMP: return "JUMP";
         default: return "INVALID";
     }
 }
@@ -262,6 +532,7 @@ QNStatus qn_qir_build(const QNProgram *program,
             case STMT_U32_LE:
             case STMT_U32_GT:
             case STMT_U32_GE:
+            case STMT_IF:
                 has_scalar_statement = true;
                 break;
             default:
@@ -538,6 +809,113 @@ QNStatus qn_qir_build(const QNProgram *program,
                 ins.b = scalar_value(out, (uint16_t)right);
                 ins.out = scalar_value(out, (uint16_t)output_id);
                 if (!append_qir(out, ins, diag)) goto fail;
+                break;
+            }
+
+            case STMT_IF: {
+                if (result_emitted) {
+                    qn_diag_set_code(diag, "QN-E7535",
+                                     stmt->line, stmt->column,
+                                     "if/else cannot follow an emitted result");
+                    goto fail;
+                }
+                if (i + 1u != program->count) {
+                    qn_diag_set_code(diag, "QN-E7535",
+                                     stmt->line, stmt->column,
+                                     "Stage 7 Step 4 if/else must terminate the scalar program");
+                    goto fail;
+                }
+
+                int condition_id = find_scalar(
+                    out, stmt->as.if_stmt.condition
+                );
+                if (condition_id < 0) {
+                    qn_diag_set_code(diag, "QN-E7530",
+                                     stmt->line, stmt->column,
+                                     "if condition references unknown scalar '%s'",
+                                     stmt->as.if_stmt.condition);
+                    goto fail;
+                }
+                if (out->scalars[condition_id].type != QIR_TYPE_BOOL) {
+                    qn_diag_set_code(diag, "QN-E7531",
+                                     stmt->line, stmt->column,
+                                     "if condition must be bool; got %s",
+                                     qn_qir_type_name(
+                                         out->scalars[condition_id].type
+                                     ));
+                    goto fail;
+                }
+
+                uint16_t outer_count = out->scalar_count;
+                QNQIRInstruction branch;
+                memset(&branch, 0, sizeof(branch));
+                branch.line = stmt->line;
+                branch.column = stmt->column;
+                branch.opcode = QIR_OP_JUMP_IF_FALSE;
+                branch.a = scalar_value(
+                    out, (uint16_t)condition_id
+                );
+                size_t jump_if_index = out->instruction_count;
+                if (!append_qir(out, branch, diag)) goto fail;
+
+                QNQIRType then_type = QIR_TYPE_NONE;
+                if (!compile_scalar_branch(
+                        out,
+                        stmt->as.if_stmt.then_items,
+                        stmt->as.if_stmt.then_count,
+                        outer_count,
+                        &then_type,
+                        diag)) {
+                    goto fail;
+                }
+
+                memset(&branch, 0, sizeof(branch));
+                branch.line = stmt->line;
+                branch.column = stmt->column;
+                branch.opcode = QIR_OP_JUMP;
+                size_t jump_end_index = out->instruction_count;
+                if (!append_qir(out, branch, diag)) goto fail;
+
+                if (out->instruction_count > UINT32_MAX) {
+                    qn_diag_set_code(diag, "QN-E7540",
+                                     stmt->line, stmt->column,
+                                     "control-flow target exceeds QBC address range");
+                    goto fail;
+                }
+                out->instructions[jump_if_index].imm =
+                    (uint32_t)out->instruction_count;
+
+                QNQIRType else_type = QIR_TYPE_NONE;
+                if (!compile_scalar_branch(
+                        out,
+                        stmt->as.if_stmt.else_items,
+                        stmt->as.if_stmt.else_count,
+                        outer_count,
+                        &else_type,
+                        diag)) {
+                    goto fail;
+                }
+
+                if (then_type != else_type) {
+                    qn_diag_set_code(diag, "QN-E7538",
+                                     stmt->line, stmt->column,
+                                     "if/else branch output types must match; got %s and %s",
+                                     qn_qir_type_name(then_type),
+                                     qn_qir_type_name(else_type));
+                    goto fail;
+                }
+                if (out->instruction_count > UINT32_MAX) {
+                    qn_diag_set_code(diag, "QN-E7540",
+                                     stmt->line, stmt->column,
+                                     "control-flow target exceeds QBC address range");
+                    goto fail;
+                }
+                out->instructions[jump_end_index].imm =
+                    (uint32_t)out->instruction_count;
+                out->capability_mask |=
+                    QN_CAP_COMPUTE_U32_SCALAR |
+                    QN_CAP_EVIDENCE_EMIT;
+                result_emitted = true;
                 break;
             }
 
@@ -844,6 +1222,15 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
                 dst->opcode = OP_BOOL_EMIT;
                 dst->a = (uint8_t)src->a.register_id;
                 break;
+            case QIR_OP_JUMP_IF_FALSE:
+                dst->opcode = OP_JUMP_IF_FALSE;
+                dst->a = (uint8_t)src->a.register_id;
+                dst->imm = src->imm;
+                break;
+            case QIR_OP_JUMP:
+                dst->opcode = OP_JUMP;
+                dst->imm = src->imm;
+                break;
             default:
                 qn_diag_set(diag, src->line, src->column,
                             "cannot lower QIR opcode %d",
@@ -901,7 +1288,17 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
     qn_hex32(qir->source_digest, source_hex);
 
     unsigned bool_count = scalar_bool_count(qir);
-    if (bool_count > 0u) {
+    bool has_control_flow = false;
+    for (size_t i = 0; i < qir->instruction_count; ++i) {
+        if (qir->instructions[i].opcode == QIR_OP_JUMP_IF_FALSE ||
+            qir->instructions[i].opcode == QIR_OP_JUMP) {
+            has_control_flow = true;
+            break;
+        }
+    }
+    if (has_control_flow) {
+        fprintf(stream, "QBIT_NOVA_TYPED_QIR_V04_STEP4\n");
+    } else if (bool_count > 0u) {
         fprintf(stream, "QBIT_NOVA_TYPED_QIR_V03\n");
     } else {
         fprintf(stream, "QBIT_NOVA_TYPED_QIR_V02\n");
@@ -990,6 +1387,13 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
             case QIR_OP_U32_EMIT:
             case QIR_OP_BOOL_EMIT:
                 dump_value(qir, &ins->a, stream);
+                break;
+            case QIR_OP_JUMP_IF_FALSE:
+                dump_value(qir, &ins->a, stream);
+                fprintf(stream, " -> %u", ins->imm);
+                break;
+            case QIR_OP_JUMP:
+                fprintf(stream, "-> %u", ins->imm);
                 break;
             default:
                 fprintf(stream, "invalid");

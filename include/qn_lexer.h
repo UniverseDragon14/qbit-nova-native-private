@@ -26,6 +26,8 @@ typedef enum {
     TOK_LT_EQUAL,
     TOK_GT,
     TOK_GT_EQUAL,
+    TOK_LBRACE,
+    TOK_RBRACE,
 
     TOK_QBIT,
     TOK_QREG,
@@ -41,7 +43,9 @@ typedef enum {
     TOK_SHOTS,
     TOK_VECTOR_ADD_U32,
     TOK_LET,
-    TOK_U32
+    TOK_U32,
+    TOK_IF,
+    TOK_ELSE
 } QNTokenKind;
 
 typedef struct {

@@ -164,8 +164,11 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
         out->operation,
         sizeof(out->operation),
         scalar_program
-            ? (pure_u32_scalar ? "u32-scalar-program"
-                               : "typed-scalar-program")
+            ? (pure_u32_scalar
+                ? "u32-scalar-program"
+                : (qn_qbc_has_control_flow(bc)
+                    ? "typed-control-flow-program"
+                    : "typed-scalar-program"))
             : "quantum-state-simulation"
     );
 
