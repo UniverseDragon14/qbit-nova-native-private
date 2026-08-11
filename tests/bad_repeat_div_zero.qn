@@ -1,0 +1,6 @@
+let total: u32 = 64
+let zero: u32 = 0
+repeat 2 {
+    set total = total / zero
+}
+emit total

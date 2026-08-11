@@ -1,0 +1,4 @@
+let total: u32 = 0
+let one: u32 = 1
+set total = total + one
+emit total

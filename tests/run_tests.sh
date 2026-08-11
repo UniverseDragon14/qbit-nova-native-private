@@ -1626,6 +1626,239 @@ done
 
 echo "NATIVE_IF_ELSE_CONTROL_FLOW=PASS"
 
+
+echo "=== NATIVE BOUNDED REPEAT + EXPLICIT U32 MUTATION ==="
+
+"$BIN" qir examples/u32_repeat_add.qn > "$TMP/u32-repeat-add-qir.out"
+grep -q '^QBIT_NOVA_TYPED_QIR_V05_STEP5$' "$TMP/u32-repeat-add-qir.out"
+grep -q '0002 REPEAT.ENTER count=4 -> exit=5' "$TMP/u32-repeat-add-qir.out"
+grep -q '0003 U32.SET.ADD' "$TMP/u32-repeat-add-qir.out"
+grep -q '0004 REPEAT.NEXT  -> enter=2' "$TMP/u32-repeat-add-qir.out"
+
+"$BIN" check examples/u32_repeat_add.qn > "$TMP/u32-repeat-add-check.out"
+grep -q '^PASS: QBIT_NOVA_NATIVE_CHECK_V01$' "$TMP/u32-repeat-add-check.out"
+
+"$BIN" build examples/u32_repeat_add.qn -o "$TMP/u32-repeat-add-a.qbc" >/dev/null
+"$BIN" build examples/u32_repeat_add.qn -o "$TMP/u32-repeat-add-b.qbc" >/dev/null
+cmp "$TMP/u32-repeat-add-a.qbc" "$TMP/u32-repeat-add-b.qbc"
+
+python3 - "$TMP/u32-repeat-add-a.qbc" <<'PY'
+import struct
+import sys
+
+path = sys.argv[1]
+data = open(path, 'rb').read()
+assert data[:4] == b'QBCN'
+version = struct.unpack_from('<H', data, 4)[0]
+header_size = struct.unpack_from('<H', data, 6)[0]
+insn_count = struct.unpack_from('<I', data, 8)[0]
+scalar_count = struct.unpack_from('<H', data, 76)[0]
+bool_mask = struct.unpack_from('<Q', data, 80)[0]
+assert version == 7
+assert header_size == 88
+assert insn_count == 7
+assert scalar_count == 2
+assert bool_mask == 0
+ops = []
+for i in range(insn_count):
+    off = header_size + i * 8
+    op, a, b, flags, imm = struct.unpack_from('<BBBBI', data, off)
+    ops.append((op, a, b, flags, imm))
+assert ops[2] == (0x64, 4, 0, 0, 5)
+assert ops[3] == (0x60, 0, 0, 1, 0)
+assert ops[4] == (0x65, 0, 0, 0, 2)
+assert ops[5][0] == 0x53
+assert ops[6] == (0x7f, 0, 0, 0, 0)
+print('QBC_V7_BOUNDED_REPEAT_LAYOUT=PASS')
+PY
+
+"$BIN" run examples/u32_repeat_add.qn --backend cpu \
+  --receipt "$TMP/u32-repeat-add.json" \
+  > "$TMP/u32-repeat-add.out"
+grep -q '^QBIT_NOVA_NATIVE_BOUNDED_REPEAT_RUN_V07_STEP5$' \
+  "$TMP/u32-repeat-add.out"
+grep -q '^boundary=native_typed_u32_bounded_repeat$' \
+  "$TMP/u32-repeat-add.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/u32-repeat-add.out"
+grep -q '^qvm_operation=bounded-repeat-program$' "$TMP/u32-repeat-add.out"
+grep -q '^scalar_contract=typed-u32-bounded-repeat-v1$' \
+  "$TMP/u32-repeat-add.out"
+grep -q '^control_flow=bounded-repeat-only$' "$TMP/u32-repeat-add.out"
+grep -q '^general_backward_jump=false$' "$TMP/u32-repeat-add.out"
+grep -q '^repeat_iterations=4$' "$TMP/u32-repeat-add.out"
+grep -q '^repeat_max_iterations=1024$' "$TMP/u32-repeat-add.out"
+grep -q '^execution_step_bound=16$' "$TMP/u32-repeat-add.out"
+grep -q '^execution_step_limit=1000000$' "$TMP/u32-repeat-add.out"
+grep -q '^emitted_u32=4$' "$TMP/u32-repeat-add.out"
+grep -q '"marker": "QBIT_NOVA_NATIVE_BOUNDED_REPEAT_RECEIPT_V07_STEP5"' \
+  "$TMP/u32-repeat-add.json"
+grep -q '"control_flow": "bounded-repeat-only"' "$TMP/u32-repeat-add.json"
+grep -q '"repeat_iterations": 4' "$TMP/u32-repeat-add.json"
+grep -q '"execution_step_bound": 16' "$TMP/u32-repeat-add.json"
+
+"$BIN" run examples/u32_repeat_add.qn --backend auto \
+  > "$TMP/u32-repeat-auto.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/u32-repeat-auto.out"
+grep -q '^qvm_selection_reason=scalar-operation-not-gpu-eligible$' \
+  "$TMP/u32-repeat-auto.out"
+grep -q '^qvm_operation=bounded-repeat-program$' "$TMP/u32-repeat-auto.out"
+grep -q '^qvm_gpu_execution_attempted=false$' "$TMP/u32-repeat-auto.out"
+grep -q '^qvm_cpu_fallback=true$' "$TMP/u32-repeat-auto.out"
+grep -q '^emitted_u32=4$' "$TMP/u32-repeat-auto.out"
+
+set +e
+"$BIN" run examples/u32_repeat_add.qn --backend vulkan \
+  >"$TMP/u32-repeat-vulkan.out" 2>"$TMP/u32-repeat-vulkan.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E7201' "$TMP/u32-repeat-vulkan.err"
+test ! -s "$TMP/u32-repeat-vulkan.out"
+
+for SPEC in \
+  'examples/u32_repeat_1.qn 8' \
+  'examples/u32_repeat_add.qn 4' \
+  'examples/u32_repeat_sub.qn 6' \
+  'examples/u32_repeat_mul.qn 54' \
+  'examples/u32_repeat_div.qn 4' \
+  'examples/u32_repeat_multiple.qn 4' \
+  'examples/u32_repeat_1024.qn 1024'
+do
+  set -- $SPEC
+  SOURCE="$1"
+  EXPECTED="$2"
+  NAME="$(basename "$SOURCE" .qn)"
+  "$BIN" run "$SOURCE" --backend cpu \
+    > "$TMP/${NAME}.out"
+  grep -q "^emitted_u32=${EXPECTED}$" "$TMP/${NAME}.out"
+done
+
+set +e
+"$BIN" run tests/bad_repeat_div_zero.qn --backend cpu \
+  >"$TMP/bad-repeat-div-zero.out" 2>"$TMP/bad-repeat-div-zero.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+grep -q 'QN-E7517' "$TMP/bad-repeat-div-zero.err"
+test ! -s "$TMP/bad-repeat-div-zero.out"
+
+for SPEC in \
+  'bad_repeat_zero QN-E7550' \
+  'bad_repeat_1025 QN-E7550' \
+  'bad_repeat_missing_brace QN-E7552' \
+  'bad_repeat_empty QN-E7553' \
+  'bad_repeat_nested QN-E7554' \
+  'bad_repeat_if_inside QN-E7555' \
+  'bad_repeat_inside_if QN-E7555' \
+  'bad_repeat_emit_inside QN-E7557' \
+  'bad_repeat_let_inside QN-E7556' \
+  'bad_set_outside_repeat QN-E7558' \
+  'bad_repeat_unknown_target QN-E7560' \
+  'bad_repeat_unknown_operand QN-E7561' \
+  'bad_repeat_bool_target QN-E7562' \
+  'bad_repeat_bool_operand QN-E7562' \
+  'bad_repeat_comparison_inside QN-E7559' \
+  'bad_repeat_missing_final_emit QN-E7563' \
+  'bad_repeat_two_blocks QN-E7551'
+do
+  set -- $SPEC
+  CASE="$1"
+  CODE="$2"
+  set +e
+  "$BIN" check "tests/${CASE}.qn" \
+    >"$TMP/${CASE}.out" 2>"$TMP/${CASE}.err"
+  STATUS=$?
+  set -e
+  test "$STATUS" -ne 0
+  test ! -s "$TMP/${CASE}.out"
+  grep -q "$CODE" "$TMP/${CASE}.err"
+done
+
+# Deterministic static execution-budget rejection: 1024 iterations over
+# 1000 mutations exceeds the one-million-step VM ceiling before execution.
+{
+  echo 'let total: u32 = 0'
+  echo 'let one: u32 = 1'
+  echo 'repeat 1024 {'
+  for _ in $(seq 1 1000); do
+    echo '    set total = total + one'
+  done
+  echo '}'
+  echo 'emit total'
+} > "$TMP/bad-repeat-budget.qn"
+set +e
+"$BIN" check "$TMP/bad-repeat-budget.qn" \
+  >"$TMP/bad-repeat-budget.out" 2>"$TMP/bad-repeat-budget.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 8
+test ! -s "$TMP/bad-repeat-budget.out"
+grep -q 'QN-E7565' "$TMP/bad-repeat-budget.err"
+
+# QBC v7 may contain the dedicated repeat back-edge only. A version downgrade
+# or malformed repeat pairing must fail closed during decode/contract checks.
+cp "$TMP/u32-repeat-add-a.qbc" "$TMP/u32-repeat-v6-tamper.qbc"
+python3 - "$TMP/u32-repeat-v6-tamper.qbc" <<'PY'
+import struct
+import sys
+with open(sys.argv[1], 'r+b') as f:
+    f.seek(4)
+    f.write(struct.pack('<H', 6))
+PY
+set +e
+"$BIN" exec "$TMP/u32-repeat-v6-tamper.qbc" --backend cpu \
+  >"$TMP/u32-repeat-v6-tamper.out" 2>"$TMP/u32-repeat-v6-tamper.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+grep -q 'QN-E7567' "$TMP/u32-repeat-v6-tamper.err"
+test ! -s "$TMP/u32-repeat-v6-tamper.out"
+
+cp "$TMP/u32-repeat-add-a.qbc" "$TMP/u32-repeat-target-tamper.qbc"
+python3 - "$TMP/u32-repeat-target-tamper.qbc" <<'PY'
+import struct
+import sys
+with open(sys.argv[1], 'r+b') as f:
+    # v7 header 88 + REPEAT_NEXT instruction index 4 * 8 + imm offset 4
+    f.seek(88 + 4 * 8 + 4)
+    f.write(struct.pack('<I', 1))
+PY
+set +e
+"$BIN" exec "$TMP/u32-repeat-target-tamper.qbc" --backend cpu \
+  >"$TMP/u32-repeat-target-tamper.out" 2>"$TMP/u32-repeat-target-tamper.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+grep -Eq 'QN-E7509|QN-E7569' "$TMP/u32-repeat-target-tamper.err"
+test ! -s "$TMP/u32-repeat-target-tamper.out"
+
+# Step 1/2/3/4 and Stage 6 bytecode are frozen. Step 5 must not alter them.
+for SPEC in \
+  'examples/u32_scalar.qn 9c7c0638cf508ad5c690f9764395a40679f183ef4d6f5681fb101cb0e025aa12' \
+  'examples/u32_scalar_sub.qn fa5174d59fce3a500a841472eb724216bf22b8c9cb30a604e7600c9e0d78e6d6' \
+  'examples/u32_scalar_mul.qn e1d0d2f4814dfbb914eaba3ed1330965a4b11bc2d76f6d4dbfe3af051e4079d8' \
+  'examples/u32_scalar_div.qn 3bec38d21273192423967cc11520c4206e1409b245a37bd11c31cf0514af14d9' \
+  'examples/u32_compare_eq.qn 00ee1eca5e1a469cf14446b571f4b0287dea322b799b0a747994383469397014' \
+  'examples/u32_compare_ne.qn 2640ce131b1bf743665c69e319f5d83ecdb9467510fa99d66f2a4912b65e12fc' \
+  'examples/u32_compare_lt.qn 8d5b31294afb0c6970e53e2cb6069d7edb9f5454ea94e0f968a4d88a32542293' \
+  'examples/u32_compare_le.qn 053044f80ed3925bdca779e3eb4b6e8fea7cd6b65112b71849e2445570147d3b' \
+  'examples/u32_compare_gt.qn 3b11c46a881e5b1bc0e37570e450ba898769f1d1782a7619c2440785eee34576' \
+  'examples/u32_compare_ge.qn c25981d35b6ebc7d5ea281c6fc1cb527ebe9ed256bd41ff5c0c7d1c0d85d04aa' \
+  'examples/u32_if_else_true.qn 4032917c63e8efeb767791a73efbdd10aba525be23606540ee585305e05811cd' \
+  'examples/u32_if_else_false.qn 9733d164c22dbbb6db2e5cfaf76c6ebb6b27c4f4568fd0295ef378790352cbad' \
+  'examples/u32_if_else_branch_local.qn 68ebccf826db0e3dcec8274318f53ae201b7f40af6e823eb2ab788175169cc5f' \
+  'examples/vector_add_u32.qn 9f9a624a88200847595c3a5499dc03fe4811bef1676e988fac4ce53a8448642f'
+do
+  set -- $SPEC
+  SOURCE="$1"
+  EXPECTED_SHA="$2"
+  OUT="$TMP/step5-regression-$(basename "$SOURCE" .qn).qbc"
+  "$BIN" build "$SOURCE" -o "$OUT" >/dev/null
+  test "$(sha256sum "$OUT" | awk '{print $1}')" = "$EXPECTED_SHA"
+done
+
+echo "BOUNDED_REPEAT_PIPELINE=PASS"
+
 echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/a.qbc" >/dev/null
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null

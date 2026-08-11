@@ -1,0 +1,6 @@
+let total: u32 = 0
+let one: u32 = 1
+repeat 2 {
+    set total = total + missing
+}
+emit total

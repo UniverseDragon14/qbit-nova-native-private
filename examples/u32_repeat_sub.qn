@@ -1,0 +1,6 @@
+let total: u32 = 10
+let one: u32 = 1
+repeat 4 {
+    set total = total - one
+}
+emit total

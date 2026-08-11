@@ -10,6 +10,7 @@
 #define QBC_V4_HEADER_SIZE 80u
 #define QBC_V5_HEADER_SIZE 88u
 #define QBC_V6_HEADER_SIZE 88u
+#define QBC_V7_HEADER_SIZE 88u
 #define QBC_REG_SIZE 68u
 #define QBC_INSN_SIZE 8u
 
@@ -72,15 +73,210 @@ static bool scalar_mask_fits_count(const QNBytecode *bc) {
     return (bc->scalar_bool_mask >> bc->scalar_count) == 0u;
 }
 
-bool qn_qbc_has_control_flow(const QNBytecode *bc) {
+bool qn_qbc_has_bounded_repeat(const QNBytecode *bc) {
     if (!bc || !bc->instructions) return false;
     for (size_t i = 0; i < bc->instruction_count; ++i) {
-        if (bc->instructions[i].opcode == OP_JUMP_IF_FALSE ||
-            bc->instructions[i].opcode == OP_JUMP) {
+        if (bc->instructions[i].opcode == OP_REPEAT_ENTER ||
+            bc->instructions[i].opcode == OP_REPEAT_NEXT) {
             return true;
         }
     }
     return false;
+}
+
+bool qn_qbc_has_control_flow(const QNBytecode *bc) {
+    if (!bc || !bc->instructions) return false;
+    for (size_t i = 0; i < bc->instruction_count; ++i) {
+        if (bc->instructions[i].opcode == OP_JUMP_IF_FALSE ||
+            bc->instructions[i].opcode == OP_JUMP ||
+            bc->instructions[i].opcode == OP_REPEAT_ENTER ||
+            bc->instructions[i].opcode == OP_REPEAT_NEXT) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool repeat_set_opcode(uint8_t opcode) {
+    return opcode == OP_U32_SET_ADD ||
+           opcode == OP_U32_SET_SUB ||
+           opcode == OP_U32_SET_MUL ||
+           opcode == OP_U32_SET_DIV;
+}
+
+bool qn_qbc_execution_step_bound(const QNBytecode *bc, uint64_t *steps_out) {
+    if (!bc || !bc->instructions || bc->instruction_count == 0u ||
+        !steps_out) return false;
+
+    if (!qn_qbc_has_bounded_repeat(bc)) {
+        *steps_out = (uint64_t)bc->instruction_count;
+        return *steps_out <= QN_MAX_EXECUTION_STEPS;
+    }
+
+    size_t enter = SIZE_MAX;
+    size_t next = SIZE_MAX;
+    uint32_t count = 0u;
+    for (size_t i = 0; i < bc->instruction_count; ++i) {
+        const QNInstruction *ins = &bc->instructions[i];
+        if (ins->opcode == OP_REPEAT_ENTER) {
+            if (enter != SIZE_MAX) return false;
+            enter = i;
+            count = (uint32_t)ins->a | ((uint32_t)ins->b << 8);
+        } else if (ins->opcode == OP_REPEAT_NEXT) {
+            if (next != SIZE_MAX) return false;
+            next = i;
+        }
+    }
+    if (enter == SIZE_MAX || next == SIZE_MAX ||
+        count == 0u || count > QN_MAX_REPEAT_ITERATIONS ||
+        next <= enter + 1u ||
+        bc->instructions[enter].imm != next + 1u ||
+        bc->instructions[next].imm != enter) {
+        return false;
+    }
+
+    uint64_t body = (uint64_t)(next - enter - 1u);
+    uint64_t before = (uint64_t)enter;
+    uint64_t after = (uint64_t)(bc->instruction_count - (next + 1u));
+    uint64_t per_iteration = body + UINT64_C(2);
+    if (per_iteration > UINT64_MAX / count) return false;
+    uint64_t loop_steps = per_iteration * count;
+    if (before > UINT64_MAX - loop_steps ||
+        before + loop_steps > UINT64_MAX - after) return false;
+    *steps_out = before + loop_steps + after;
+    return *steps_out <= QN_MAX_EXECUTION_STEPS;
+}
+
+static bool qn_qbc_is_bounded_repeat_contract(const QNBytecode *bc) {
+    if (!bc || !bc->instructions ||
+        bc->total_qubits != 0u || bc->register_count != 0u ||
+        bc->scalar_count == 0u || bc->scalar_count > QN_MAX_SCALARS ||
+        !scalar_mask_fits_count(bc) ||
+        bc->initial_basis != 0u || bc->default_shots != 1u ||
+        bc->default_seed != 1u || bc->instruction_count < 6u ||
+        bc->instruction_count > QN_MAX_INSTRUCTIONS) return false;
+
+    QNCapabilityMask exact =
+        QN_CAP_COMPUTE_U32_SCALAR | QN_CAP_EVIDENCE_EMIT;
+    if (bc->capability_mask != exact) return false;
+
+    size_t enter = SIZE_MAX;
+    size_t next = SIZE_MAX;
+    uint32_t repeat_count = 0u;
+    for (size_t i = 0; i < bc->instruction_count; ++i) {
+        uint8_t opcode = bc->instructions[i].opcode;
+        if (opcode == OP_REPEAT_ENTER) {
+            if (enter != SIZE_MAX) return false;
+            enter = i;
+            repeat_count = (uint32_t)bc->instructions[i].a |
+                           ((uint32_t)bc->instructions[i].b << 8);
+        } else if (opcode == OP_REPEAT_NEXT) {
+            if (next != SIZE_MAX) return false;
+            next = i;
+        } else if (opcode == OP_JUMP_IF_FALSE || opcode == OP_JUMP) {
+            return false;
+        }
+    }
+    if (enter == SIZE_MAX || next == SIZE_MAX ||
+        repeat_count == 0u || repeat_count > QN_MAX_REPEAT_ITERATIONS ||
+        next <= enter + 1u ||
+        bc->instructions[enter].flags != 0u ||
+        bc->instructions[enter].imm != next + 1u ||
+        bc->instructions[next].a != 0u ||
+        bc->instructions[next].b != 0u ||
+        bc->instructions[next].flags != 0u ||
+        bc->instructions[next].imm != enter ||
+        next + 3u != bc->instruction_count) return false;
+
+    uint64_t init = 0u;
+    uint64_t ever_initialized = 0u;
+    bool saw_compute = false;
+
+    for (size_t i = 0; i < enter; ++i) {
+        const QNInstruction *ins = &bc->instructions[i];
+        uint64_t bit_a = ins->a < 64u ? UINT64_C(1) << ins->a : 0u;
+        uint64_t bit_b = ins->b < 64u ? UINT64_C(1) << ins->b : 0u;
+        uint64_t bit_f = ins->flags < 64u ? UINT64_C(1) << ins->flags : 0u;
+        switch (ins->opcode) {
+            case OP_U32_CONST:
+                if (ins->a >= bc->scalar_count || scalar_slot_is_bool(bc, ins->a) ||
+                    (init & bit_a) != 0u || ins->b != 0u || ins->flags != 0u)
+                    return false;
+                init |= bit_a; ever_initialized |= bit_a; saw_compute = true;
+                break;
+            case OP_U32_ADD:
+            case OP_U32_SUB:
+            case OP_U32_MUL:
+            case OP_U32_DIV:
+                if (ins->a >= bc->scalar_count || ins->b >= bc->scalar_count ||
+                    ins->flags >= bc->scalar_count ||
+                    scalar_slot_is_bool(bc, ins->a) ||
+                    scalar_slot_is_bool(bc, ins->b) ||
+                    scalar_slot_is_bool(bc, ins->flags) ||
+                    (init & bit_a) != 0u || (init & bit_b) == 0u ||
+                    (init & bit_f) == 0u || ins->imm != 0u) return false;
+                init |= bit_a; ever_initialized |= bit_a; saw_compute = true;
+                break;
+            case OP_U32_EQ:
+            case OP_U32_NE:
+            case OP_U32_LT:
+            case OP_U32_LE:
+            case OP_U32_GT:
+            case OP_U32_GE:
+                if (ins->a >= bc->scalar_count || ins->b >= bc->scalar_count ||
+                    ins->flags >= bc->scalar_count ||
+                    !scalar_slot_is_bool(bc, ins->a) ||
+                    scalar_slot_is_bool(bc, ins->b) ||
+                    scalar_slot_is_bool(bc, ins->flags) ||
+                    (init & bit_a) != 0u || (init & bit_b) == 0u ||
+                    (init & bit_f) == 0u || ins->imm != 0u) return false;
+                init |= bit_a; ever_initialized |= bit_a; saw_compute = true;
+                break;
+            default:
+                return false;
+        }
+    }
+
+    uint64_t required = bc->scalar_count == 64u
+        ? UINT64_MAX
+        : ((UINT64_C(1) << bc->scalar_count) - UINT64_C(1));
+    if ((ever_initialized & required) != required) return false;
+
+    for (size_t i = enter + 1u; i < next; ++i) {
+        const QNInstruction *ins = &bc->instructions[i];
+        if (!repeat_set_opcode(ins->opcode) ||
+            ins->a >= bc->scalar_count || ins->b >= bc->scalar_count ||
+            ins->flags >= bc->scalar_count || ins->imm != 0u ||
+            scalar_slot_is_bool(bc, ins->a) ||
+            scalar_slot_is_bool(bc, ins->b) ||
+            scalar_slot_is_bool(bc, ins->flags)) return false;
+        uint64_t bit_a = UINT64_C(1) << ins->a;
+        uint64_t bit_b = UINT64_C(1) << ins->b;
+        uint64_t bit_f = UINT64_C(1) << ins->flags;
+        if ((init & bit_a) == 0u || (init & bit_b) == 0u ||
+            (init & bit_f) == 0u) return false;
+        saw_compute = true;
+    }
+
+    const QNInstruction *emit = &bc->instructions[next + 1u];
+    uint64_t emit_bit = emit->a < 64u ? UINT64_C(1) << emit->a : 0u;
+    if (emit->a >= bc->scalar_count || (init & emit_bit) == 0u ||
+        emit->b != 0u || emit->flags != 0u || emit->imm != 0u) return false;
+    if (emit->opcode == OP_U32_EMIT) {
+        if (scalar_slot_is_bool(bc, emit->a)) return false;
+    } else if (emit->opcode == OP_BOOL_EMIT) {
+        if (!scalar_slot_is_bool(bc, emit->a)) return false;
+    } else {
+        return false;
+    }
+
+    const QNInstruction *end = &bc->instructions[next + 2u];
+    if (end->opcode != OP_END || end->a != 0u || end->b != 0u ||
+        end->flags != 0u || end->imm != 0u || !saw_compute) return false;
+
+    uint64_t steps = 0u;
+    return qn_qbc_execution_step_bound(bc, &steps) &&
+           steps <= QN_MAX_EXECUTION_STEPS;
 }
 
 static void scalar_propagate(size_t target,
@@ -129,6 +325,10 @@ bool qn_qbc_is_typed_scalar_program(const QNBytecode *bc) {
     QNCapabilityMask exact =
         QN_CAP_COMPUTE_U32_SCALAR | QN_CAP_EVIDENCE_EMIT;
     if (bc->capability_mask != exact) return false;
+
+    if (qn_qbc_has_bounded_repeat(bc)) {
+        return qn_qbc_is_bounded_repeat_contract(bc);
+    }
 
     bool *reachable = calloc(bc->instruction_count, sizeof(*reachable));
     uint64_t *init_in = calloc(bc->instruction_count, sizeof(*init_in));
@@ -365,12 +565,15 @@ QNStatus qn_qbc_encode(const QNBytecode *bc,
                        uint8_t **data_out,
                        size_t *size_out,
                        QNDiagnostic *diag) {
+    bool has_bounded_repeat = qn_qbc_has_bounded_repeat(bc);
     bool has_control_flow = qn_qbc_has_control_flow(bc);
-    uint16_t version = has_control_flow
-        ? 6u
-        : (bc->scalar_bool_mask != 0u
-            ? 5u
-            : (bc->scalar_count > 0u ? 4u : 3u));
+    uint16_t version = has_bounded_repeat
+        ? 7u
+        : (has_control_flow
+            ? 6u
+            : (bc->scalar_bool_mask != 0u
+                ? 5u
+                : (bc->scalar_count > 0u ? 4u : 3u)));
     uint16_t header_size = version >= 5u
         ? QBC_V5_HEADER_SIZE
         : (version == 4u ? QBC_V4_HEADER_SIZE : QBC_V3_HEADER_SIZE);
@@ -443,7 +646,8 @@ QNStatus qn_qbc_decode(const uint8_t *data,
           (version == 3u && header_size == QBC_V3_HEADER_SIZE) ||
           (version == 4u && header_size == QBC_V4_HEADER_SIZE) ||
           (version == 5u && header_size == QBC_V5_HEADER_SIZE) ||
-          (version == 6u && header_size == QBC_V6_HEADER_SIZE))) {
+          (version == 6u && header_size == QBC_V6_HEADER_SIZE) ||
+          (version == 7u && header_size == QBC_V7_HEADER_SIZE))) {
         qn_diag_set(diag, 0, 0,
                     "unsupported QBC version/header");
         return QN_ERR_QBC;
@@ -578,6 +782,12 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             case OP_BOOL_EMIT:
             case OP_JUMP_IF_FALSE:
             case OP_JUMP:
+            case OP_U32_SET_ADD:
+            case OP_U32_SET_SUB:
+            case OP_U32_SET_MUL:
+            case OP_U32_SET_DIV:
+            case OP_REPEAT_ENTER:
+            case OP_REPEAT_NEXT:
             case OP_END:
                 break;
             default:
@@ -609,9 +819,10 @@ QNStatus qn_qbc_decode(const uint8_t *data,
              ins->opcode == OP_U32_MUL ||
              ins->opcode == OP_U32_DIV ||
              ins->opcode == OP_U32_EMIT) &&
-            version != 4u && version != 5u && version != 6u) {
+            version != 4u && version != 5u && version != 6u &&
+            version != 7u) {
             qn_diag_set_code(diag, "QN-E7509", 0, 0,
-                             "u32 scalar opcode requires QBC version 4, 5 or 6");
+                             "u32 scalar opcode requires QBC version 4, 5, 6 or 7");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
@@ -623,9 +834,50 @@ QNStatus qn_qbc_decode(const uint8_t *data,
              ins->opcode == OP_U32_GT ||
              ins->opcode == OP_U32_GE ||
              ins->opcode == OP_BOOL_EMIT) &&
-            version != 5u && version != 6u) {
+            version != 5u && version != 6u && version != 7u) {
             qn_diag_set_code(diag, "QN-E7523", 0, 0,
-                             "comparison/bool opcode requires QBC version 5 or 6");
+                             "comparison/bool opcode requires QBC version 5, 6 or 7");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+
+        if ((repeat_set_opcode(ins->opcode) ||
+             ins->opcode == OP_REPEAT_ENTER ||
+             ins->opcode == OP_REPEAT_NEXT) && version != 7u) {
+            qn_diag_set_code(diag, "QN-E7567", 0, 0,
+                             "bounded repeat opcode requires QBC version 7");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+        if (repeat_set_opcode(ins->opcode) &&
+            (ins->a >= scalars || ins->b >= scalars ||
+             ins->flags >= scalars || ins->imm != 0u ||
+             (scalar_bool_mask & (UINT64_C(1) << ins->a)) != 0u ||
+             (scalar_bool_mask & (UINT64_C(1) << ins->b)) != 0u ||
+             (scalar_bool_mask & (UINT64_C(1) << ins->flags)) != 0u)) {
+            qn_diag_set_code(diag, "QN-E7568", 0, 0,
+                             "invalid bounded repeat set bytecode");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+        if (ins->opcode == OP_REPEAT_ENTER) {
+            uint32_t repeat_count = (uint32_t)ins->a |
+                                    ((uint32_t)ins->b << 8);
+            if (repeat_count == 0u ||
+                repeat_count > QN_MAX_REPEAT_ITERATIONS ||
+                ins->flags != 0u || ins->imm <= i + 1u ||
+                ins->imm >= instruction_count) {
+                qn_diag_set_code(diag, "QN-E7569", 0, 0,
+                                 "invalid bounded repeat enter bytecode");
+                qn_bytecode_free(out);
+                return QN_ERR_QBC;
+            }
+        }
+        if (ins->opcode == OP_REPEAT_NEXT &&
+            (ins->a != 0u || ins->b != 0u || ins->flags != 0u ||
+             ins->imm >= i)) {
+            qn_diag_set_code(diag, "QN-E7569", 0, 0,
+                             "invalid bounded repeat next bytecode");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
@@ -731,6 +983,7 @@ QNStatus qn_qbc_decode(const uint8_t *data,
     bool contains_vector_opcode = false;
     bool contains_scalar_opcode = false;
     bool contains_control_flow = false;
+    bool contains_repeat = false;
     for (size_t i = 0; i < out->instruction_count; ++i) {
         uint8_t opcode = out->instructions[i].opcode;
         if (opcode == OP_U32_VECTOR_ADD) contains_vector_opcode = true;
@@ -741,10 +994,15 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             opcode == OP_U32_LE || opcode == OP_U32_GT ||
             opcode == OP_U32_GE || opcode == OP_U32_EMIT ||
             opcode == OP_BOOL_EMIT ||
-            opcode == OP_JUMP_IF_FALSE || opcode == OP_JUMP)
+            opcode == OP_JUMP_IF_FALSE || opcode == OP_JUMP ||
+            repeat_set_opcode(opcode) || opcode == OP_REPEAT_ENTER ||
+            opcode == OP_REPEAT_NEXT)
             contains_scalar_opcode = true;
         if (opcode == OP_JUMP_IF_FALSE || opcode == OP_JUMP)
             contains_control_flow = true;
+        if (repeat_set_opcode(opcode) || opcode == OP_REPEAT_ENTER ||
+            opcode == OP_REPEAT_NEXT)
+            contains_repeat = true;
     }
 
     if (contains_vector_opcode) {
@@ -767,7 +1025,10 @@ QNStatus qn_qbc_decode(const uint8_t *data,
                     qn_qbc_is_typed_scalar_program(out);
         } else if (version == 6u) {
             valid = out->scalar_bool_mask != 0u &&
-                    contains_control_flow &&
+                    contains_control_flow && !contains_repeat &&
+                    qn_qbc_is_typed_scalar_program(out);
+        } else if (version == 7u) {
+            valid = contains_repeat && !contains_control_flow &&
                     qn_qbc_is_typed_scalar_program(out);
         }
         if (!valid) {

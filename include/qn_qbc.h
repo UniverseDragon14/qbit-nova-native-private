@@ -27,6 +27,12 @@ typedef enum {
     OP_BOOL_EMIT = 0x5d,
     OP_JUMP_IF_FALSE = 0x5e,
     OP_JUMP = 0x5f,
+    OP_U32_SET_ADD = 0x60,
+    OP_U32_SET_SUB = 0x61,
+    OP_U32_SET_MUL = 0x62,
+    OP_U32_SET_DIV = 0x63,
+    OP_REPEAT_ENTER = 0x64,
+    OP_REPEAT_NEXT = 0x65,
     OP_END = 0x7f
 } QNOpcode;
 
@@ -70,5 +76,7 @@ bool qn_qbc_is_bounded_u32_vector_add(const QNBytecode *bc);
 bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc);
 bool qn_qbc_is_typed_scalar_program(const QNBytecode *bc);
 bool qn_qbc_has_control_flow(const QNBytecode *bc);
+bool qn_qbc_has_bounded_repeat(const QNBytecode *bc);
+bool qn_qbc_execution_step_bound(const QNBytecode *bc, uint64_t *steps_out);
 
 #endif

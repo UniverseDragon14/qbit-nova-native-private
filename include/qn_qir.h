@@ -36,7 +36,13 @@ typedef enum {
     QIR_OP_U32_GE,
     QIR_OP_BOOL_EMIT,
     QIR_OP_JUMP_IF_FALSE,
-    QIR_OP_JUMP
+    QIR_OP_JUMP,
+    QIR_OP_U32_SET_ADD,
+    QIR_OP_U32_SET_SUB,
+    QIR_OP_U32_SET_MUL,
+    QIR_OP_U32_SET_DIV,
+    QIR_OP_REPEAT_ENTER,
+    QIR_OP_REPEAT_NEXT
 } QNQIROpcode;
 
 typedef struct {

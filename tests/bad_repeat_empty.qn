@@ -1,0 +1,4 @@
+let total: u32 = 0
+repeat 4 {
+}
+emit total

@@ -72,6 +72,8 @@ const char *qn_token_kind_name(QNTokenKind kind) {
         case TOK_U32: return "U32";
         case TOK_IF: return "IF";
         case TOK_ELSE: return "ELSE";
+        case TOK_REPEAT: return "REPEAT";
+        case TOK_SET: return "SET";
         default: return "UNKNOWN";
     }
 }
@@ -95,6 +97,8 @@ static QNTokenKind keyword(const char *s) {
     if (!strcmp(s, "u32")) return TOK_U32;
     if (!strcmp(s, "if")) return TOK_IF;
     if (!strcmp(s, "else")) return TOK_ELSE;
+    if (!strcmp(s, "repeat")) return TOK_REPEAT;
+    if (!strcmp(s, "set")) return TOK_SET;
     return TOK_IDENT;
 }
 

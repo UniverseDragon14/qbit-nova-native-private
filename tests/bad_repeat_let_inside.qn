@@ -1,0 +1,5 @@
+let total: u32 = 0
+repeat 2 {
+    let one: u32 = 1
+}
+emit total

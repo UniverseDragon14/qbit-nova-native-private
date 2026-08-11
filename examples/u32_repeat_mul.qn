@@ -1,0 +1,6 @@
+let total: u32 = 2
+let factor: u32 = 3
+repeat 3 {
+    set total = total * factor
+}
+emit total

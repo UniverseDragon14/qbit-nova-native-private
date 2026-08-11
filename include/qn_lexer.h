@@ -45,7 +45,9 @@ typedef enum {
     TOK_LET,
     TOK_U32,
     TOK_IF,
-    TOK_ELSE
+    TOK_ELSE,
+    TOK_REPEAT,
+    TOK_SET
 } QNTokenKind;
 
 typedef struct {

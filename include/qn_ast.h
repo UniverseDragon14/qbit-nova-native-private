@@ -35,7 +35,12 @@ typedef enum {
     STMT_U32_LE,
     STMT_U32_GT,
     STMT_U32_GE,
-    STMT_IF
+    STMT_IF,
+    STMT_U32_SET_ADD,
+    STMT_U32_SET_SUB,
+    STMT_U32_SET_MUL,
+    STMT_U32_SET_DIV,
+    STMT_REPEAT
 } QNStmtKind;
 
 typedef struct QNStmt QNStmt;
@@ -72,6 +77,11 @@ struct QNStmt {
             QNStmt *else_items;
             size_t else_count;
         } if_stmt;
+        struct {
+            uint32_t iterations;
+            QNStmt *body_items;
+            size_t body_count;
+        } repeat_stmt;
     } as;
 };
 

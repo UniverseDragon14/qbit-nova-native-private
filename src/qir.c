@@ -418,6 +418,63 @@ static bool compile_scalar_branch(QNQIRProgram *qir,
     return true;
 }
 
+static bool compile_repeat_body(QNQIRProgram *qir,
+                                const QNStmt *items,
+                                size_t count,
+                                QNDiagnostic *diag) {
+    for (size_t i = 0; i < count; ++i) {
+        const QNStmt *stmt = &items[i];
+        QNQIRInstruction ins;
+        memset(&ins, 0, sizeof(ins));
+        ins.line = stmt->line;
+        ins.column = stmt->column;
+
+        if (stmt->kind != STMT_U32_SET_ADD &&
+            stmt->kind != STMT_U32_SET_SUB &&
+            stmt->kind != STMT_U32_SET_MUL &&
+            stmt->kind != STMT_U32_SET_DIV) {
+            qn_diag_set_code(diag, "QN-E7559", stmt->line, stmt->column,
+                             "repeat body contains unsupported statement");
+            return false;
+        }
+
+        int target = find_scalar(qir, stmt->as.scalar_binary.output);
+        if (target < 0) {
+            qn_diag_set_code(diag, "QN-E7560", stmt->line, stmt->column,
+                             "set target references unknown scalar '%s'",
+                             stmt->as.scalar_binary.output);
+            return false;
+        }
+        int left = find_scalar(qir, stmt->as.scalar_binary.left);
+        int right = find_scalar(qir, stmt->as.scalar_binary.right);
+        if (left < 0 || right < 0) {
+            qn_diag_set_code(diag, "QN-E7561", stmt->line, stmt->column,
+                             "set reads unknown scalar in '%s = %s op %s'",
+                             stmt->as.scalar_binary.output,
+                             stmt->as.scalar_binary.left,
+                             stmt->as.scalar_binary.right);
+            return false;
+        }
+        if (qir->scalars[target].type != QIR_TYPE_U32 ||
+            qir->scalars[left].type != QIR_TYPE_U32 ||
+            qir->scalars[right].type != QIR_TYPE_U32) {
+            qn_diag_set_code(diag, "QN-E7562", stmt->line, stmt->column,
+                             "set target and operands must all be u32");
+            return false;
+        }
+
+        ins.opcode = stmt->kind == STMT_U32_SET_ADD ? QIR_OP_U32_SET_ADD :
+                     stmt->kind == STMT_U32_SET_SUB ? QIR_OP_U32_SET_SUB :
+                     stmt->kind == STMT_U32_SET_MUL ? QIR_OP_U32_SET_MUL :
+                                                       QIR_OP_U32_SET_DIV;
+        ins.out = scalar_value(qir, (uint16_t)target);
+        ins.a = scalar_value(qir, (uint16_t)left);
+        ins.b = scalar_value(qir, (uint16_t)right);
+        if (!append_qir(qir, ins, diag)) return false;
+    }
+    return true;
+}
+
 void qn_qir_free(QNQIRProgram *qir) {
     if (!qir) return;
     free(qir->instructions);
@@ -461,6 +518,12 @@ const char *qn_qir_opcode_name(QNQIROpcode opcode) {
         case QIR_OP_BOOL_EMIT: return "BOOL.EMIT";
         case QIR_OP_JUMP_IF_FALSE: return "JUMP.IF.FALSE";
         case QIR_OP_JUMP: return "JUMP";
+        case QIR_OP_U32_SET_ADD: return "U32.SET.ADD";
+        case QIR_OP_U32_SET_SUB: return "U32.SET.SUB";
+        case QIR_OP_U32_SET_MUL: return "U32.SET.MUL";
+        case QIR_OP_U32_SET_DIV: return "U32.SET.DIV";
+        case QIR_OP_REPEAT_ENTER: return "REPEAT.ENTER";
+        case QIR_OP_REPEAT_NEXT: return "REPEAT.NEXT";
         default: return "INVALID";
     }
 }
@@ -506,6 +569,8 @@ QNStatus qn_qir_build(const QNProgram *program,
     bool has_vector_add = false;
     bool has_scalar_statement = false;
     bool has_quantum_statement = false;
+    bool has_repeat_statement = false;
+    bool has_if_statement = false;
 
     for (size_t i = 0; i < program->count; ++i) {
         switch (program->items[i].kind) {
@@ -532,12 +597,25 @@ QNStatus qn_qir_build(const QNProgram *program,
             case STMT_U32_LE:
             case STMT_U32_GT:
             case STMT_U32_GE:
+                has_scalar_statement = true;
+                break;
             case STMT_IF:
                 has_scalar_statement = true;
+                has_if_statement = true;
+                break;
+            case STMT_REPEAT:
+                has_scalar_statement = true;
+                has_repeat_statement = true;
                 break;
             default:
                 break;
         }
+    }
+
+    if (has_repeat_statement && has_if_statement) {
+        qn_diag_set_code(diag, "QN-E7555", 1, 1,
+                         "Stage 7 Step 5 does not permit if/repeat mixing");
+        goto fail;
     }
 
     unsigned modes = (has_quantum_statement ? 1u : 0u) +
@@ -809,6 +887,71 @@ QNStatus qn_qir_build(const QNProgram *program,
                 ins.b = scalar_value(out, (uint16_t)right);
                 ins.out = scalar_value(out, (uint16_t)output_id);
                 if (!append_qir(out, ins, diag)) goto fail;
+                break;
+            }
+
+            case STMT_REPEAT: {
+                if (result_emitted) {
+                    qn_diag_set_code(diag, "QN-E7563",
+                                     stmt->line, stmt->column,
+                                     "repeat cannot follow an emitted result");
+                    goto fail;
+                }
+                if (stmt->as.repeat_stmt.iterations == 0u ||
+                    stmt->as.repeat_stmt.iterations > QN_MAX_REPEAT_ITERATIONS) {
+                    qn_diag_set_code(diag, "QN-E7550",
+                                     stmt->line, stmt->column,
+                                     "repeat count must be 1..%u",
+                                     QN_MAX_REPEAT_ITERATIONS);
+                    goto fail;
+                }
+                if (stmt->as.repeat_stmt.body_count == 0u) {
+                    qn_diag_set_code(diag, "QN-E7553",
+                                     stmt->line, stmt->column,
+                                     "repeat body must contain at least one set statement");
+                    goto fail;
+                }
+                if (i + 2u != program->count ||
+                    program->items[i + 1u].kind != STMT_EMIT) {
+                    qn_diag_set_code(diag, "QN-E7563",
+                                     stmt->line, stmt->column,
+                                     "bounded repeat must be followed by exactly one final emit");
+                    goto fail;
+                }
+
+                QNQIRInstruction enter;
+                memset(&enter, 0, sizeof(enter));
+                enter.line = stmt->line;
+                enter.column = stmt->column;
+                enter.opcode = QIR_OP_REPEAT_ENTER;
+                enter.a.register_id = (uint16_t)stmt->as.repeat_stmt.iterations;
+                size_t enter_index = out->instruction_count;
+                if (!append_qir(out, enter, diag)) goto fail;
+
+                if (!compile_repeat_body(out,
+                                         stmt->as.repeat_stmt.body_items,
+                                         stmt->as.repeat_stmt.body_count,
+                                         diag)) {
+                    goto fail;
+                }
+
+                QNQIRInstruction next;
+                memset(&next, 0, sizeof(next));
+                next.line = stmt->line;
+                next.column = stmt->column;
+                next.opcode = QIR_OP_REPEAT_NEXT;
+                next.imm = (uint32_t)enter_index;
+                if (!append_qir(out, next, diag)) goto fail;
+
+                if (out->instruction_count > UINT32_MAX) {
+                    qn_diag_set_code(diag, "QN-E7564",
+                                     stmt->line, stmt->column,
+                                     "repeat exit target exceeds QBC address range");
+                    goto fail;
+                }
+                out->instructions[enter_index].imm =
+                    (uint32_t)out->instruction_count;
+                out->capability_mask |= QN_CAP_COMPUTE_U32_SCALAR;
                 break;
             }
 
@@ -1231,6 +1374,28 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
                 dst->opcode = OP_JUMP;
                 dst->imm = src->imm;
                 break;
+            case QIR_OP_U32_SET_ADD:
+            case QIR_OP_U32_SET_SUB:
+            case QIR_OP_U32_SET_MUL:
+            case QIR_OP_U32_SET_DIV:
+                dst->opcode = src->opcode == QIR_OP_U32_SET_ADD ? OP_U32_SET_ADD :
+                              src->opcode == QIR_OP_U32_SET_SUB ? OP_U32_SET_SUB :
+                              src->opcode == QIR_OP_U32_SET_MUL ? OP_U32_SET_MUL :
+                                                                  OP_U32_SET_DIV;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->b = (uint8_t)src->a.register_id;
+                dst->flags = (uint8_t)src->b.register_id;
+                break;
+            case QIR_OP_REPEAT_ENTER:
+                dst->opcode = OP_REPEAT_ENTER;
+                dst->a = (uint8_t)(src->a.register_id & 0xffu);
+                dst->b = (uint8_t)(src->a.register_id >> 8);
+                dst->imm = src->imm;
+                break;
+            case QIR_OP_REPEAT_NEXT:
+                dst->opcode = OP_REPEAT_NEXT;
+                dst->imm = src->imm;
+                break;
             default:
                 qn_diag_set(diag, src->line, src->column,
                             "cannot lower QIR opcode %d",
@@ -1241,6 +1406,23 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
     }
 
     out->instructions[out->instruction_count - 1u].opcode = OP_END;
+    if (qn_qbc_has_bounded_repeat(out)) {
+        uint64_t step_bound = 0u;
+        if (!qn_qbc_execution_step_bound(out, &step_bound) ||
+            step_bound > QN_MAX_EXECUTION_STEPS) {
+            qn_diag_set_code(diag, "QN-E7565", 0, 0,
+                             "bounded repeat execution budget exceeds %u steps",
+                             QN_MAX_EXECUTION_STEPS);
+            qn_bytecode_free(out);
+            return QN_ERR_LIMIT;
+        }
+        if (!qn_qbc_is_typed_scalar_program(out)) {
+            qn_diag_set_code(diag, "QN-E7566", 0, 0,
+                             "bounded repeat QBC contract invalid after lowering");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+    }
     return QN_OK;
 }
 
@@ -1289,14 +1471,20 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
 
     unsigned bool_count = scalar_bool_count(qir);
     bool has_control_flow = false;
+    bool has_bounded_repeat = false;
     for (size_t i = 0; i < qir->instruction_count; ++i) {
+        if (qir->instructions[i].opcode == QIR_OP_REPEAT_ENTER ||
+            qir->instructions[i].opcode == QIR_OP_REPEAT_NEXT) {
+            has_bounded_repeat = true;
+        }
         if (qir->instructions[i].opcode == QIR_OP_JUMP_IF_FALSE ||
             qir->instructions[i].opcode == QIR_OP_JUMP) {
             has_control_flow = true;
-            break;
         }
     }
-    if (has_control_flow) {
+    if (has_bounded_repeat) {
+        fprintf(stream, "QBIT_NOVA_TYPED_QIR_V05_STEP5\n");
+    } else if (has_control_flow) {
         fprintf(stream, "QBIT_NOVA_TYPED_QIR_V04_STEP4\n");
     } else if (bool_count > 0u) {
         fprintf(stream, "QBIT_NOVA_TYPED_QIR_V03\n");
@@ -1394,6 +1582,23 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
                 break;
             case QIR_OP_JUMP:
                 fprintf(stream, "-> %u", ins->imm);
+                break;
+            case QIR_OP_U32_SET_ADD:
+            case QIR_OP_U32_SET_SUB:
+            case QIR_OP_U32_SET_MUL:
+            case QIR_OP_U32_SET_DIV:
+                dump_value(qir, &ins->out, stream);
+                fprintf(stream, " <- ");
+                dump_value(qir, &ins->a, stream);
+                fprintf(stream, ", ");
+                dump_value(qir, &ins->b, stream);
+                break;
+            case QIR_OP_REPEAT_ENTER:
+                fprintf(stream, "count=%u -> exit=%u",
+                        ins->a.register_id, ins->imm);
+                break;
+            case QIR_OP_REPEAT_NEXT:
+                fprintf(stream, "-> enter=%u", ins->imm);
                 break;
             default:
                 fprintf(stream, "invalid");

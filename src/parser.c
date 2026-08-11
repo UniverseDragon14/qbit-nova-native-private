@@ -41,19 +41,30 @@ static bool add_stmt(QNProgram *program, QNStmt stmt, QNDiagnostic *diag) {
 }
 
 static void qn_stmt_free_contents(QNStmt *stmt) {
-    if (!stmt || stmt->kind != STMT_IF) return;
-    for (size_t i = 0; i < stmt->as.if_stmt.then_count; ++i) {
-        qn_stmt_free_contents(&stmt->as.if_stmt.then_items[i]);
+    if (!stmt) return;
+    if (stmt->kind == STMT_IF) {
+        for (size_t i = 0; i < stmt->as.if_stmt.then_count; ++i) {
+            qn_stmt_free_contents(&stmt->as.if_stmt.then_items[i]);
+        }
+        for (size_t i = 0; i < stmt->as.if_stmt.else_count; ++i) {
+            qn_stmt_free_contents(&stmt->as.if_stmt.else_items[i]);
+        }
+        free(stmt->as.if_stmt.then_items);
+        free(stmt->as.if_stmt.else_items);
+        stmt->as.if_stmt.then_items = NULL;
+        stmt->as.if_stmt.else_items = NULL;
+        stmt->as.if_stmt.then_count = 0u;
+        stmt->as.if_stmt.else_count = 0u;
+        return;
     }
-    for (size_t i = 0; i < stmt->as.if_stmt.else_count; ++i) {
-        qn_stmt_free_contents(&stmt->as.if_stmt.else_items[i]);
+    if (stmt->kind == STMT_REPEAT) {
+        for (size_t i = 0; i < stmt->as.repeat_stmt.body_count; ++i) {
+            qn_stmt_free_contents(&stmt->as.repeat_stmt.body_items[i]);
+        }
+        free(stmt->as.repeat_stmt.body_items);
+        stmt->as.repeat_stmt.body_items = NULL;
+        stmt->as.repeat_stmt.body_count = 0u;
     }
-    free(stmt->as.if_stmt.then_items);
-    free(stmt->as.if_stmt.else_items);
-    stmt->as.if_stmt.then_items = NULL;
-    stmt->as.if_stmt.else_items = NULL;
-    stmt->as.if_stmt.then_count = 0u;
-    stmt->as.if_stmt.else_count = 0u;
 }
 
 void qn_program_free(QNProgram *program) {
@@ -189,6 +200,11 @@ static bool parse_branch_statement(Parser *p, QNStmt *s) {
                          "nested if is not enabled in Stage 7 Step 4");
         return false;
     }
+    if (match(p, TOK_REPEAT)) {
+        qn_diag_set_code(p->diag, "QN-E7555", start->line, start->column,
+                         "repeat inside if is not enabled in Stage 7 Step 5");
+        return false;
+    }
     if (match(p, TOK_LET)) {
         return parse_u32_let_after_keyword(p, s);
     }
@@ -240,6 +256,138 @@ static bool parse_scalar_block(Parser *p,
     return true;
 }
 
+static bool parse_set_after_keyword(Parser *p, QNStmt *s) {
+    const QNToken *target = expect(p, TOK_IDENT, "set target variable");
+    if (!target || !expect(p, TOK_EQUAL, "'='")) return false;
+    const QNToken *left = expect(p, TOK_IDENT, "left variable");
+    if (!left) return false;
+
+    if (match(p, TOK_PLUS)) {
+        s->kind = STMT_U32_SET_ADD;
+    } else if (match(p, TOK_MINUS)) {
+        s->kind = STMT_U32_SET_SUB;
+    } else if (match(p, TOK_STAR)) {
+        s->kind = STMT_U32_SET_MUL;
+    } else if (match(p, TOK_SLASH)) {
+        s->kind = STMT_U32_SET_DIV;
+    } else {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7559", t->line, t->column,
+                         "set requires one of +, -, *, /");
+        return false;
+    }
+
+    const QNToken *right = expect(p, TOK_IDENT, "right variable");
+    if (!right) return false;
+    snprintf(s->as.scalar_binary.output, sizeof(s->as.scalar_binary.output),
+             "%s", target->text);
+    snprintf(s->as.scalar_binary.left, sizeof(s->as.scalar_binary.left),
+             "%s", left->text);
+    snprintf(s->as.scalar_binary.right, sizeof(s->as.scalar_binary.right),
+             "%s", right->text);
+    return true;
+}
+
+static bool parse_repeat_body_statement(Parser *p, QNStmt *s) {
+    const QNToken *start = peek(p);
+    memset(s, 0, sizeof(*s));
+    s->line = start->line;
+    s->column = start->column;
+
+    if (match(p, TOK_REPEAT)) {
+        qn_diag_set_code(p->diag, "QN-E7554", start->line, start->column,
+                         "nested repeat is not enabled in Stage 7 Step 5");
+        return false;
+    }
+    if (match(p, TOK_IF)) {
+        qn_diag_set_code(p->diag, "QN-E7555", start->line, start->column,
+                         "if inside repeat is not enabled in Stage 7 Step 5");
+        return false;
+    }
+    if (match(p, TOK_LET)) {
+        qn_diag_set_code(p->diag, "QN-E7556", start->line, start->column,
+                         "let inside repeat is not enabled in Stage 7 Step 5");
+        return false;
+    }
+    if (match(p, TOK_EMIT)) {
+        qn_diag_set_code(p->diag, "QN-E7557", start->line, start->column,
+                         "emit inside repeat is not enabled in Stage 7 Step 5");
+        return false;
+    }
+    if (match(p, TOK_SET)) {
+        return parse_set_after_keyword(p, s);
+    }
+
+    qn_diag_set_code(p->diag, "QN-E7559", start->line, start->column,
+                     "repeat body permits only explicit set statements");
+    return false;
+}
+
+static bool parse_repeat_block(Parser *p,
+                               QNStmt **items_out,
+                               size_t *count_out) {
+    QNProgram block = {0};
+    while (match(p, TOK_NEWLINE)) {}
+
+    while (!is(p, TOK_RBRACE)) {
+        if (is(p, TOK_EOF)) {
+            const QNToken *t = peek(p);
+            qn_diag_set_code(p->diag, "QN-E7552", t->line, t->column,
+                             "unterminated repeat block; expected '}'");
+            qn_program_free(&block);
+            return false;
+        }
+        QNStmt stmt;
+        if (!parse_repeat_body_statement(p, &stmt) ||
+            !consume_branch_line_end(p) ||
+            !add_stmt(&block, stmt, p->diag)) {
+            qn_stmt_free_contents(&stmt);
+            qn_program_free(&block);
+            return false;
+        }
+        while (match(p, TOK_NEWLINE)) {}
+    }
+
+    (void)match(p, TOK_RBRACE);
+    if (block.count == 0u) {
+        const QNToken *t = prev(p);
+        qn_diag_set_code(p->diag, "QN-E7553", t->line, t->column,
+                         "repeat body must contain at least one set statement");
+        qn_program_free(&block);
+        return false;
+    }
+    *items_out = block.items;
+    *count_out = block.count;
+    return true;
+}
+
+static bool parse_repeat_after_keyword(Parser *p, QNStmt *s) {
+    s->kind = STMT_REPEAT;
+    const QNToken *count = expect(p, TOK_INT, "repeat iteration literal");
+    if (!count) return false;
+    if (count->int_value == 0u ||
+        count->int_value > QN_MAX_REPEAT_ITERATIONS) {
+        qn_diag_set_code(p->diag, "QN-E7550", count->line, count->column,
+                         "repeat count must be 1..%u",
+                         QN_MAX_REPEAT_ITERATIONS);
+        return false;
+    }
+    s->as.repeat_stmt.iterations = (uint32_t)count->int_value;
+    if (!match(p, TOK_LBRACE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7552", t->line, t->column,
+                         "expected '{' to start repeat block");
+        return false;
+    }
+    if (!parse_repeat_block(p,
+                            &s->as.repeat_stmt.body_items,
+                            &s->as.repeat_stmt.body_count)) {
+        qn_stmt_free_contents(s);
+        return false;
+    }
+    return true;
+}
+
 static bool parse_if_after_keyword(Parser *p, QNStmt *s) {
     s->kind = STMT_IF;
     const QNToken *condition = expect(p, TOK_IDENT, "bool condition variable");
@@ -287,6 +435,7 @@ static bool parse_if_after_keyword(Parser *p, QNStmt *s) {
 QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag) {
     memset(out, 0, sizeof(*out));
     Parser p = {.tokens=tokens,.at=0,.diag=diag};
+    bool seen_repeat = false;
     while (match(&p, TOK_NEWLINE)) {}
 
     while (!is(&p, TOK_EOF)) {
@@ -381,6 +530,18 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             if (!parse_u32_let_after_keyword(&p, &s)) goto fail;
         } else if (match(&p, TOK_IF)) {
             if (!parse_if_after_keyword(&p, &s)) goto fail;
+        } else if (match(&p, TOK_REPEAT)) {
+            if (seen_repeat) {
+                qn_diag_set_code(diag, "QN-E7551", start->line, start->column,
+                                 "Stage 7 Step 5 permits exactly one top-level repeat block");
+                goto fail;
+            }
+            seen_repeat = true;
+            if (!parse_repeat_after_keyword(&p, &s)) goto fail;
+        } else if (match(&p, TOK_SET)) {
+            qn_diag_set_code(diag, "QN-E7558", start->line, start->column,
+                             "set is legal only inside a repeat block");
+            goto fail;
         } else if (is(&p, TOK_IDENT)) {
             if (!parse_scalar_binary(&p, &s)) goto fail;
         } else if (match(&p, TOK_VECTOR_ADD_U32)) {

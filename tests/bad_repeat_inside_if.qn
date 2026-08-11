@@ -1,0 +1,11 @@
+let a: u32 = 1
+let b: u32 = 2
+flag = a < b
+if flag {
+    repeat 2 {
+        set a = a + b
+    }
+    emit a
+} else {
+    emit b
+}

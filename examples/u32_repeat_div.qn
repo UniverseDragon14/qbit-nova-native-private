@@ -1,0 +1,6 @@
+let total: u32 = 64
+let divisor: u32 = 2
+repeat 4 {
+    set total = total / divisor
+}
+emit total
