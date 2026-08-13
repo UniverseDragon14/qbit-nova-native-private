@@ -1,0 +1,3 @@
+let value: u32 = 1
+call missing(value) -> answer
+emit answer

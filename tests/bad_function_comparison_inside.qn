@@ -1,0 +1,8 @@
+fn bad(left: u32, right: u32) -> u32 {
+    same = left == right
+    return left
+}
+let first: u32 = 1
+let second: u32 = 1
+call bad(first, second) -> answer
+emit answer

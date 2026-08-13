@@ -55,6 +55,9 @@ const char *qn_token_kind_name(QNTokenKind kind) {
         case TOK_GT_EQUAL: return "GT_EQUAL";
         case TOK_LBRACE: return "LBRACE";
         case TOK_RBRACE: return "RBRACE";
+        case TOK_LPAREN: return "LPAREN";
+        case TOK_RPAREN: return "RPAREN";
+        case TOK_COMMA: return "COMMA";
         case TOK_QBIT: return "QBIT";
         case TOK_QREG: return "QREG";
         case TOK_H: return "H";
@@ -74,6 +77,9 @@ const char *qn_token_kind_name(QNTokenKind kind) {
         case TOK_ELSE: return "ELSE";
         case TOK_REPEAT: return "REPEAT";
         case TOK_SET: return "SET";
+        case TOK_FN: return "FN";
+        case TOK_CALL: return "CALL";
+        case TOK_RETURN: return "RETURN";
         default: return "UNKNOWN";
     }
 }
@@ -99,6 +105,9 @@ static QNTokenKind keyword(const char *s) {
     if (!strcmp(s, "else")) return TOK_ELSE;
     if (!strcmp(s, "repeat")) return TOK_REPEAT;
     if (!strcmp(s, "set")) return TOK_SET;
+    if (!strcmp(s, "fn")) return TOK_FN;
+    if (!strcmp(s, "call")) return TOK_CALL;
+    if (!strcmp(s, "return")) return TOK_RETURN;
     return TOK_IDENT;
 }
 
@@ -155,6 +164,12 @@ QNStatus qn_lex(const char *source, QNTokenList *out, QNDiagnostic *diag) {
             t.kind = TOK_LBRACE; ++i; ++col;
         } else if (c == '}') {
             t.kind = TOK_RBRACE; ++i; ++col;
+        } else if (c == '(') {
+            t.kind = TOK_LPAREN; ++i; ++col;
+        } else if (c == ')') {
+            t.kind = TOK_RPAREN; ++i; ++col;
+        } else if (c == ',') {
+            t.kind = TOK_COMMA; ++i; ++col;
         } else if (c == '.') {
             t.kind = TOK_DOT; ++i; ++col;
         } else if (c == ':') {

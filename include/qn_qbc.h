@@ -33,6 +33,8 @@ typedef enum {
     OP_U32_SET_DIV = 0x63,
     OP_REPEAT_ENTER = 0x64,
     OP_REPEAT_NEXT = 0x65,
+    OP_CALL = 0x66,
+    OP_RETURN = 0x67,
     OP_END = 0x7f
 } QNOpcode;
 
@@ -50,11 +52,23 @@ typedef struct {
     uint16_t width;
 } QNRegisterInfo;
 
+
+typedef struct {
+    uint32_t entry_pc;
+    uint32_t end_pc;
+    uint16_t scalar_count;
+    uint8_t param_count;
+    uint8_t flags;
+} QNFunctionRecord;
+
 typedef struct {
     uint16_t total_qubits;
     uint16_t register_count;
     uint16_t scalar_count;
     uint64_t scalar_bool_mask;
+    uint16_t function_count;
+    uint32_t main_entry_pc;
+    QNFunctionRecord functions[QN_MAX_FUNCTIONS];
     uint64_t initial_basis;
     uint32_t default_shots;
     uint64_t default_seed;
@@ -77,6 +91,7 @@ bool qn_qbc_is_u32_scalar_program(const QNBytecode *bc);
 bool qn_qbc_is_typed_scalar_program(const QNBytecode *bc);
 bool qn_qbc_has_control_flow(const QNBytecode *bc);
 bool qn_qbc_has_bounded_repeat(const QNBytecode *bc);
+bool qn_qbc_has_functions(const QNBytecode *bc);
 bool qn_qbc_execution_step_bound(const QNBytecode *bc, uint64_t *steps_out);
 
 #endif

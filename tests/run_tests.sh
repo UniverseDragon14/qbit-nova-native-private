@@ -1859,11 +1859,309 @@ done
 
 echo "BOUNDED_REPEAT_PIPELINE=PASS"
 
+echo "=== NATIVE TYPED FUNCTIONS ==="
+
+# Positive source/semantic/runtime proofs. Each fixture exercises a distinct
+# Step6 contract and all function execution remains CPU-only.
+for SPEC in \
+  'u32_function_zero 7' \
+  'u32_function_one 81' \
+  'u32_function_two 30' \
+  'u32_function_arithmetic 12' \
+  'u32_function_nested_calls 42' \
+  'u32_function_sequential 33' \
+  'u32_function_depth8 8'
+do
+  set -- $SPEC
+  NAME="$1"
+  EXPECTED="$2"
+
+  "$BIN" check "examples/${NAME}.qn" \
+    >"$TMP/${NAME}.check.out" \
+    2>"$TMP/${NAME}.check.err"
+
+  grep -q '^PASS: QBIT_NOVA_NATIVE_CHECK_V01$' \
+    "$TMP/${NAME}.check.out"
+  test ! -s "$TMP/${NAME}.check.err"
+
+  "$BIN" run "examples/${NAME}.qn" \
+    --backend cpu \
+    --receipt "$TMP/${NAME}.receipt-a.json" \
+    >"$TMP/${NAME}.run-a.out"
+
+  "$BIN" run "examples/${NAME}.qn" \
+    --backend cpu \
+    --receipt "$TMP/${NAME}.receipt-b.json" \
+    >"$TMP/${NAME}.run-b.out"
+
+  grep -q '^QBIT_NOVA_NATIVE_FUNCTION_RUN_V07_STEP6$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^boundary=native_typed_u32_functions$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^qvm_selected_backend=cpu$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^qvm_operation=native-function-program$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^scalar_contract=typed-u32-functions-v1$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^qbc_version=8$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^function_table_record_size=12$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^call_opcode=0x66$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^return_opcode=0x67$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^max_functions=16$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^max_function_params=2$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^max_call_depth=8$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^recursion=false$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q '^parameter_passing=by-value$' \
+    "$TMP/${NAME}.run-a.out"
+  grep -q "^emitted_u32=${EXPECTED}$" \
+    "$TMP/${NAME}.run-a.out"
+
+  grep -q '"marker": "QBIT_NOVA_NATIVE_FUNCTION_RECEIPT_V07_STEP6"' \
+    "$TMP/${NAME}.receipt-a.json"
+  grep -q '"qbc_version": 8' \
+    "$TMP/${NAME}.receipt-a.json"
+  grep -q '"function_table_record_size": 12' \
+    "$TMP/${NAME}.receipt-a.json"
+  grep -q '"recursion": false' \
+    "$TMP/${NAME}.receipt-a.json"
+
+  diff -u \
+    <(grep -v '^receipt=' "$TMP/${NAME}.run-a.out") \
+    <(grep -v '^receipt=' "$TMP/${NAME}.run-b.out")
+  cmp "$TMP/${NAME}.receipt-a.json" "$TMP/${NAME}.receipt-b.json"
+done
+
+echo "NATIVE_FUNCTION_RUNTIME_AND_RECEIPTS=PASS"
+
+# QBC v8 must reproduce byte-for-byte and expose the locked 96-byte header,
+# 12-byte function table records, and real CALL/RETURN instructions.
+"$BIN" build examples/u32_function_two.qn \
+  -o "$TMP/u32-function-two-a.qbc" >/dev/null
+"$BIN" build examples/u32_function_two.qn \
+  -o "$TMP/u32-function-two-b.qbc" >/dev/null
+cmp "$TMP/u32-function-two-a.qbc" "$TMP/u32-function-two-b.qbc"
+
+python3 - "$TMP/u32-function-two-a.qbc" <<'PY'
+import struct
+import sys
+
+p = sys.argv[1]
+data = open(p, 'rb').read()
+assert data[:4] == b'QBCN'
+version, header = struct.unpack_from('<HH', data, 4)
+insn_count = struct.unpack_from('<I', data, 8)[0]
+function_count, record_size = struct.unpack_from('<HH', data, 88)
+main_entry = struct.unpack_from('<I', data, 92)[0]
+assert version == 8
+assert header == 96
+assert function_count == 1
+assert record_size == 12
+assert main_entry == 2
+entry, end, scalar_count = struct.unpack_from('<IIH', data, 96)
+param_count = data[106]
+flags = data[107]
+assert (entry, end, scalar_count, param_count, flags) == (0, 2, 3, 2, 0)
+insn_at = 96 + function_count * record_size
+ops = [data[insn_at + i * 8] for i in range(insn_count)]
+assert ops[1] == 0x67
+assert ops[4] == 0x66
+assert ops[-1] == 0x7f
+print('QBC_V8_NATIVE_FUNCTION_STRUCTURE=PASS')
+PY
+
+"$BIN" exec "$TMP/u32-function-two-a.qbc" --backend cpu \
+  >"$TMP/u32-function-two-exec.out"
+grep -q '^QBIT_NOVA_NATIVE_FUNCTION_RUN_V07_STEP6$' \
+  "$TMP/u32-function-two-exec.out"
+grep -q '^qbc_version=8$' "$TMP/u32-function-two-exec.out"
+grep -q '^emitted_u32=30$' "$TMP/u32-function-two-exec.out"
+
+echo "QBC_V8_NATIVE_FUNCTION_ROUND_TRIP=PASS"
+
+# Auto routing selects CPU; an explicit Vulkan request fails closed.
+"$BIN" run examples/u32_function_two.qn --backend auto \
+  >"$TMP/u32-function-auto.out"
+grep -q '^qvm_requested_backend=auto$' "$TMP/u32-function-auto.out"
+grep -q '^qvm_selected_backend=cpu$' "$TMP/u32-function-auto.out"
+grep -q '^qvm_selection_reason=scalar-operation-not-gpu-eligible$' \
+  "$TMP/u32-function-auto.out"
+grep -q '^qvm_operation=native-function-program$' \
+  "$TMP/u32-function-auto.out"
+
+set +e
+"$BIN" run tests/bad_function_vulkan_marker.qn --backend vulkan \
+  >"$TMP/bad-function-vulkan.out" 2>"$TMP/bad-function-vulkan.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 7
+test ! -s "$TMP/bad-function-vulkan.out"
+grep -q 'QN-E7201' "$TMP/bad-function-vulkan.err"
+grep -q "native-function-program.*not GPU-eligible" \
+  "$TMP/bad-function-vulkan.err"
+
+echo "NATIVE_FUNCTION_GPU_FAIL_CLOSED=PASS"
+
+# Source-level negative contract proofs.
+for SPEC in \
+  'bad_function_after_return 4 QN-E7578' \
+  'bad_function_bool_argument 5 QN-E7590' \
+  'bad_function_bool_return 4 QN-E7576' \
+  'bad_function_call_depth9 5 QN-E7588' \
+  'bad_function_comparison_inside 4 QN-E7576' \
+  'bad_function_definition_after_main 4 QN-E7581' \
+  'bad_function_direct_recursion 5 QN-E7587' \
+  'bad_function_duplicate_destination 5 QN-E7501' \
+  'bad_function_duplicate_name 4 QN-E7571' \
+  'bad_function_duplicate_param 4 QN-E7580' \
+  'bad_function_emit_inside 4 QN-E7574' \
+  'bad_function_execution_budget 8 QN-E7593' \
+  'bad_function_if_inside 4 QN-E7575' \
+  'bad_function_indirect_recursion 5 QN-E7587' \
+  'bad_function_missing_return 4 QN-E7579' \
+  'bad_function_nested_definition 4 QN-E7573' \
+  'bad_function_no_main_call 5 QN-E7591' \
+  'bad_function_repeat_inside 4 QN-E7575' \
+  'bad_function_three_params 4 QN-E7572' \
+  'bad_function_unknown_argument 5 QN-E7585' \
+  'bad_function_unknown_call 5 QN-E7583' \
+  'bad_function_unknown_return 5 QN-E7586' \
+  'bad_function_wrong_arg_count 5 QN-E7584' \
+  'bad_return_in_main 4 QN-E7582'
+do
+  set -- $SPEC
+  CASE="$1"
+  EXPECTED_STATUS="$2"
+  CODE="$3"
+
+  set +e
+  "$BIN" check "tests/${CASE}.qn" \
+    >"$TMP/${CASE}.out" 2>"$TMP/${CASE}.err"
+  STATUS=$?
+  set -e
+
+  test "$STATUS" -eq "$EXPECTED_STATUS"
+  test ! -s "$TMP/${CASE}.out"
+  grep -q "$CODE" "$TMP/${CASE}.err"
+done
+
+echo "NATIVE_FUNCTION_NEGATIVE_CONTRACTS=PASS"
+
+# Tamper QBC v8 metadata and CALL encoding. All malformed programs must fail
+# before execution. The first case fails in the v8 header decoder; the other
+# cases fail the typed-function bytecode contract.
+cp "$TMP/u32-function-two-a.qbc" "$TMP/function-record-size-tamper.qbc"
+python3 - "$TMP/function-record-size-tamper.qbc" <<'PY'
+import struct
+import sys
+with open(sys.argv[1], 'r+b') as f:
+    f.seek(90)
+    f.write(struct.pack('<H', 11))
+PY
+set +e
+"$BIN" exec "$TMP/function-record-size-tamper.qbc" --backend cpu \
+  >"$TMP/function-record-size-tamper.out" \
+  2>"$TMP/function-record-size-tamper.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+test ! -s "$TMP/function-record-size-tamper.out"
+grep -q 'QBC limits invalid' "$TMP/function-record-size-tamper.err"
+
+cp "$TMP/u32-function-two-a.qbc" "$TMP/function-call-index-tamper.qbc"
+python3 - "$TMP/function-call-index-tamper.qbc" <<'PY'
+import struct
+import sys
+with open(sys.argv[1], 'r+b') as f:
+    # v8: 96-byte header + one 12-byte function record + CALL index 4.
+    f.seek(96 + 12 + 4 * 8 + 4)
+    f.write(struct.pack('<I', 1))
+PY
+set +e
+"$BIN" exec "$TMP/function-call-index-tamper.qbc" --backend cpu \
+  >"$TMP/function-call-index-tamper.out" \
+  2>"$TMP/function-call-index-tamper.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+test ! -s "$TMP/function-call-index-tamper.out"
+grep -q 'QN-E7509' "$TMP/function-call-index-tamper.err"
+
+cp "$TMP/u32-function-two-a.qbc" "$TMP/function-range-tamper.qbc"
+python3 - "$TMP/function-range-tamper.qbc" <<'PY'
+import struct
+import sys
+with open(sys.argv[1], 'r+b') as f:
+    # Extend function 0 through the first main instruction.
+    f.seek(96 + 4)
+    f.write(struct.pack('<I', 3))
+PY
+set +e
+"$BIN" exec "$TMP/function-range-tamper.qbc" --backend cpu \
+  >"$TMP/function-range-tamper.out" \
+  2>"$TMP/function-range-tamper.err"
+STATUS=$?
+set -e
+test "$STATUS" -eq 6
+test ! -s "$TMP/function-range-tamper.out"
+grep -q 'QN-E7509' "$TMP/function-range-tamper.err"
+
+echo "QBC_V8_FUNCTION_TAMPER_REJECTION=PASS"
+
+# Frozen QBC compatibility: Stage6 and Stage7 Steps1-5 remain byte-identical.
+for SPEC in \
+  'examples/u32_scalar.qn 9c7c0638cf508ad5c690f9764395a40679f183ef4d6f5681fb101cb0e025aa12' \
+  'examples/u32_scalar_sub.qn fa5174d59fce3a500a841472eb724216bf22b8c9cb30a604e7600c9e0d78e6d6' \
+  'examples/u32_scalar_mul.qn e1d0d2f4814dfbb914eaba3ed1330965a4b11bc2d76f6d4dbfe3af051e4079d8' \
+  'examples/u32_scalar_div.qn 3bec38d21273192423967cc11520c4206e1409b245a37bd11c31cf0514af14d9' \
+  'examples/u32_compare_eq.qn 00ee1eca5e1a469cf14446b571f4b0287dea322b799b0a747994383469397014' \
+  'examples/u32_compare_ne.qn 2640ce131b1bf743665c69e319f5d83ecdb9467510fa99d66f2a4912b65e12fc' \
+  'examples/u32_compare_lt.qn 8d5b31294afb0c6970e53e2cb6069d7edb9f5454ea94e0f968a4d88a32542293' \
+  'examples/u32_compare_le.qn 053044f80ed3925bdca779e3eb4b6e8fea7cd6b65112b71849e2445570147d3b' \
+  'examples/u32_compare_gt.qn 3b11c46a881e5b1bc0e37570e450ba898769f1d1782a7619c2440785eee34576' \
+  'examples/u32_compare_ge.qn c25981d35b6ebc7d5ea281c6fc1cb527ebe9ed256bd41ff5c0c7d1c0d85d04aa' \
+  'examples/u32_if_else_true.qn 4032917c63e8efeb767791a73efbdd10aba525be23606540ee585305e05811cd' \
+  'examples/u32_if_else_false.qn 9733d164c22dbbb6db2e5cfaf76c6ebb6b27c4f4568fd0295ef378790352cbad' \
+  'examples/u32_if_else_branch_local.qn 68ebccf826db0e3dcec8274318f53ae201b7f40af6e823eb2ab788175169cc5f' \
+  'examples/u32_repeat_1.qn 5ae25ad1f4cebe1282081211e887ae59a15fb9a4d686fbba080c700dd52c466c' \
+  'examples/u32_repeat_1024.qn 4ffe2b0965c55421c527d9c2959078d2ad32e2c335c8dfbf7c650efd5e19ea26' \
+  'examples/u32_repeat_add.qn b7589d6ef93ae817fe1f75308072c169e4be3031e2c71a11dd49972169d3e18a' \
+  'examples/u32_repeat_sub.qn d21bac10339a2987ace52af2c2163a6729164da00d9a508468621046f87eca8e' \
+  'examples/u32_repeat_mul.qn 109537c5aab360f7ca21bd182a3cd57b21654c49668bd3263194775f1c04ac5f' \
+  'examples/u32_repeat_div.qn 5708e81f6693374f50eb9db65f6f7c825f6b091c918814470e599139e46544de' \
+  'examples/u32_repeat_multiple.qn 4126dd868e3af4cf4bf75cf52dbbf70cbcdf609a0e7301b83df04dc997200183' \
+  'examples/vector_add_u32.qn 9f9a624a88200847595c3a5499dc03fe4811bef1676e988fac4ce53a8448642f'
+do
+  set -- $SPEC
+  SOURCE="$1"
+  EXPECTED_SHA="$2"
+  OUT="$TMP/step6-regression-$(basename "$SOURCE" .qn).qbc"
+  "$BIN" build "$SOURCE" -o "$OUT" >/dev/null
+  test "$(sha256sum "$OUT" | awk '{print $1}')" = "$EXPECTED_SHA"
+done
+
+echo "STEP1_QBC_UNCHANGED=PASS"
+echo "STEP2_QBC_UNCHANGED=PASS"
+echo "STEP3_QBC_UNCHANGED=PASS"
+echo "STEP4_QBC_UNCHANGED=PASS"
+echo "STEP5_QBC_UNCHANGED=PASS"
+echo "STAGE6_QBC_UNCHANGED=PASS"
+echo "NATIVE_FUNCTIONS_PIPELINE=PASS"
+
 echo "=== DETERMINISTIC QBC ==="
 "$BIN" build examples/approval_model.qn -o "$TMP/a.qbc" >/dev/null
 "$BIN" build examples/approval_model.qn -o "$TMP/b.qbc" >/dev/null
 cmp "$TMP/a.qbc" "$TMP/b.qbc"
 
+echo "PASS: QBIT_NOVA_NATIVE_FUNCTIONS_V07_STEP6"
 echo "PASS: QBIT_NOVA_IF_ELSE_CONTROL_FLOW_V07_STEP4"
 echo "PASS: QBIT_NOVA_U32_COMPARISONS_BOOL_V07_STEP3"
 echo "PASS: QBIT_NOVA_U32_ARITHMETIC_V07_STEP2"

@@ -1,0 +1,12 @@
+fn arithmetic(left: u32, right: u32) -> u32 {
+    added = left + right
+    subtracted = added - right
+    multiplied = subtracted * right
+    divided = multiplied / right
+    return divided
+}
+
+let first: u32 = 12
+let second: u32 = 3
+call arithmetic(first, second) -> answer
+emit answer

@@ -1,0 +1,13 @@
+fn add(left: u32, right: u32) -> u32 {
+    sum = left + right
+    return sum
+}
+
+let one: u32 = 1
+let two: u32 = 2
+let ten: u32 = 10
+let twenty: u32 = 20
+call add(one, two) -> small
+call add(ten, twenty) -> large
+result = small + large
+emit result

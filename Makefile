@@ -32,6 +32,7 @@ U32_ARITHMETIC_TEST := build/test_u32_arithmetic
 U32_COMPARISON_TEST := build/test_u32_comparisons
 IF_ELSE_TEST := build/test_if_else_control_flow
 BOUNDED_REPEAT_TEST := build/test_bounded_repeat
+NATIVE_FUNCTION_TEST := build/test_native_functions
 
 .PHONY: all clean test check-deps install
 
@@ -151,12 +152,19 @@ $(BOUNDED_REPEAT_TEST): tests/test_bounded_repeat.c \
 		src/qbc.c src/qir.c src/guard.c src/util.c \
 		-o $@ $(LDLIBS)
 
+$(NATIVE_FUNCTION_TEST): tests/test_native_functions.c \
+                        src/qbc.c src/qir.c src/guard.c src/util.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) \
+		tests/test_native_functions.c \
+		src/qbc.c src/qir.c src/guard.c src/util.c \
+		-o $@ $(LDLIBS)
+
 test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
       $(REPLAY_TEST) $(REVOCATION_TEST) $(GPU_ADAPTER_TEST) \
       $(GPU_COMPUTE_TEST) $(GPU_ROUTING_TEST) \
       $(BOUNDED_GPU_TEST) $(U32_SCALAR_TEST) \
       $(U32_ARITHMETIC_TEST) $(U32_COMPARISON_TEST) \
-      $(IF_ELSE_TEST) $(BOUNDED_REPEAT_TEST)
+      $(IF_ELSE_TEST) $(BOUNDED_REPEAT_TEST) $(NATIVE_FUNCTION_TEST)
 	./$(TRUST_TEST)
 	./$(TRUST_FILE_TEST)
 	./$(REPLAY_TEST)
@@ -170,6 +178,7 @@ test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
 	./$(U32_COMPARISON_TEST)
 	./$(IF_ELSE_TEST)
 	./$(BOUNDED_REPEAT_TEST)
+	./$(NATIVE_FUNCTION_TEST)
 	bash tests/run_tests.sh
 
 install: check-deps $(BIN)

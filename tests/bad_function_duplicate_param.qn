@@ -1,0 +1,6 @@
+fn bad(value: u32, value: u32) -> u32 {
+    return value
+}
+let input: u32 = 1
+call bad(input, input) -> answer
+emit answer

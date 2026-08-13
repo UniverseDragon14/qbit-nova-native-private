@@ -1,0 +1,7 @@
+fn bad() -> u32 {
+    let value: u32 = 1
+    return value
+    let extra: u32 = 2
+}
+call bad() -> answer
+emit answer

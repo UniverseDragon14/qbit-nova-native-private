@@ -40,7 +40,9 @@ typedef enum {
     STMT_U32_SET_SUB,
     STMT_U32_SET_MUL,
     STMT_U32_SET_DIV,
-    STMT_REPEAT
+    STMT_REPEAT,
+    STMT_CALL,
+    STMT_RETURN
 } QNStmtKind;
 
 typedef struct QNStmt QNStmt;
@@ -82,10 +84,29 @@ struct QNStmt {
             QNStmt *body_items;
             size_t body_count;
         } repeat_stmt;
+        struct {
+            char function[QN_NAME_CAP];
+            char args[QN_MAX_FUNCTION_PARAMS][QN_NAME_CAP];
+            uint8_t arg_count;
+            char output[QN_NAME_CAP];
+        } call;
+        struct { char name[QN_NAME_CAP]; } return_stmt;
     } as;
 };
 
 typedef struct {
+    char name[QN_NAME_CAP];
+    char params[QN_MAX_FUNCTION_PARAMS][QN_NAME_CAP];
+    uint8_t param_count;
+    QNStmt *body_items;
+    size_t body_count;
+    int line;
+    int column;
+} QNFunctionDecl;
+
+typedef struct {
+    QNFunctionDecl functions[QN_MAX_FUNCTIONS];
+    size_t function_count;
     QNStmt *items;
     size_t count;
     size_t capacity;

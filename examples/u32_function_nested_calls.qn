@@ -1,0 +1,15 @@
+fn increment(value: u32) -> u32 {
+    let one: u32 = 1
+    result = value + one
+    return result
+}
+
+fn twice(value: u32) -> u32 {
+    call increment(value) -> first_result
+    call increment(first_result) -> second_result
+    return second_result
+}
+
+let start: u32 = 40
+call twice(start) -> answer
+emit answer

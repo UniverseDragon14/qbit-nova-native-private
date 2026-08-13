@@ -273,6 +273,238 @@ static QNStatus qn_vm_run_bounded_compute(
     return QN_OK;
 }
 
+typedef struct {
+    uint32_t values[QN_MAX_SCALARS];
+    bool initialized[QN_MAX_SCALARS];
+    uint16_t scalar_count;
+    size_t return_pc;
+    uint8_t return_destination;
+    uint16_t function_index;
+} QNFunctionFrame;
+
+static void qn_finish_u32_scalar_result(const QNBytecode *bc,
+                                        const QNGpuQvmRoute *route,
+                                        QNRunResult *out,
+                                        uint16_t output_id,
+                                        uint32_t output_value) {
+    (void)bc;
+    out->native_scalar_result = true;
+    out->shots = 1u;
+    out->seed = 0u;
+    out->scalar_output_id = output_id;
+    out->scalar_output_value = output_value;
+    out->scalar_output_is_bool = false;
+    out->qvm_gpu_execution_attempted = false;
+    out->qvm_gpu_execution_completed = false;
+    out->qvm_cpu_fallback = route->cpu_fallback;
+    uint8_t encoded[4] = {
+        (uint8_t)output_value,
+        (uint8_t)(output_value >> 8),
+        (uint8_t)(output_value >> 16),
+        (uint8_t)(output_value >> 24)
+    };
+    qn_sha256(encoded, sizeof(encoded), out->scalar_output_digest);
+}
+
+static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
+                                           const QNGpuQvmRoute *route,
+                                           QNRunResult *out,
+                                           QNDiagnostic *diag) {
+    uint64_t execution_bound = 0u;
+    if (!qn_qbc_execution_step_bound(bc, &execution_bound)) {
+        qn_diag_set_code(diag, "QN-E7593", 0, 0,
+                         "function execution budget is invalid or exceeds %u",
+                         QN_MAX_EXECUTION_STEPS);
+        return QN_ERR_LIMIT;
+    }
+
+    QNFunctionFrame frames[QN_MAX_CALL_DEPTH + 1u];
+    memset(frames, 0, sizeof(frames));
+    frames[0].scalar_count = bc->scalar_count;
+    frames[0].function_index = UINT16_MAX;
+
+    uint8_t depth = 0u;
+    size_t pc = bc->main_entry_pc;
+    uint64_t executed = 0u;
+    bool emitted = false;
+    bool terminated = false;
+    uint16_t emitted_id = 0u;
+    uint32_t emitted_value = 0u;
+
+    while (pc < bc->instruction_count) {
+        if (++executed > execution_bound || executed > QN_MAX_EXECUTION_STEPS) {
+            qn_diag_set_code(diag, "QN-E7593", 0, 0,
+                             "function execution step bound exceeded");
+            return QN_ERR_RUNTIME;
+        }
+
+        QNFunctionFrame *frame = &frames[depth];
+        const QNInstruction *ins = &bc->instructions[pc];
+        switch (ins->opcode) {
+            case OP_U32_CONST:
+                if (ins->a >= frame->scalar_count || frame->initialized[ins->a]) {
+                    qn_diag_set_code(diag, "QN-E7596", 0, 0,
+                                     "invalid function u32 constant destination");
+                    return QN_ERR_RUNTIME;
+                }
+                frame->values[ins->a] = ins->imm;
+                frame->initialized[ins->a] = true;
+                ++pc;
+                break;
+
+            case OP_U32_ADD:
+            case OP_U32_SUB:
+            case OP_U32_MUL:
+            case OP_U32_DIV:
+                if (ins->a >= frame->scalar_count || ins->b >= frame->scalar_count ||
+                    ins->flags >= frame->scalar_count || frame->initialized[ins->a] ||
+                    !frame->initialized[ins->b] || !frame->initialized[ins->flags]) {
+                    qn_diag_set_code(diag, "QN-E7596", 0, 0,
+                                     "function arithmetic reads invalid scalar state");
+                    return QN_ERR_RUNTIME;
+                }
+                if (ins->opcode == OP_U32_DIV && frame->values[ins->flags] == 0u) {
+                    qn_diag_set_code(diag, "QN-E7517", 0, 0,
+                                     "u32 scalar division by zero");
+                    return QN_ERR_RUNTIME;
+                }
+                switch (ins->opcode) {
+                    case OP_U32_ADD:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] + frame->values[ins->flags];
+                        break;
+                    case OP_U32_SUB:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] - frame->values[ins->flags];
+                        break;
+                    case OP_U32_MUL:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] * frame->values[ins->flags];
+                        break;
+                    case OP_U32_DIV:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] / frame->values[ins->flags];
+                        break;
+                    default:
+                        break;
+                }
+                frame->initialized[ins->a] = true;
+                ++pc;
+                break;
+
+            case OP_CALL: {
+                if (ins->imm >= bc->function_count || ins->a >= frame->scalar_count ||
+                    frame->initialized[ins->a] || depth >= QN_MAX_CALL_DEPTH) {
+                    qn_diag_set_code(diag, "QN-E7597", 0, 0,
+                                     "invalid function CALL runtime state");
+                    return QN_ERR_RUNTIME;
+                }
+                const QNFunctionRecord *callee = &bc->functions[ins->imm];
+                uint32_t args[QN_MAX_FUNCTION_PARAMS] = {0u, 0u};
+                if (callee->param_count >= 1u) {
+                    if (ins->b >= frame->scalar_count || !frame->initialized[ins->b]) {
+                        qn_diag_set_code(diag, "QN-E7597", 0, 0,
+                                         "CALL reads uninitialized argument 0");
+                        return QN_ERR_RUNTIME;
+                    }
+                    args[0] = frame->values[ins->b];
+                }
+                if (callee->param_count >= 2u) {
+                    if (ins->flags >= frame->scalar_count ||
+                        !frame->initialized[ins->flags]) {
+                        qn_diag_set_code(diag, "QN-E7597", 0, 0,
+                                         "CALL reads uninitialized argument 1");
+                        return QN_ERR_RUNTIME;
+                    }
+                    args[1] = frame->values[ins->flags];
+                }
+
+                ++depth;
+                QNFunctionFrame *next = &frames[depth];
+                memset(next, 0, sizeof(*next));
+                next->scalar_count = callee->scalar_count;
+                next->return_pc = pc + 1u;
+                next->return_destination = ins->a;
+                next->function_index = (uint16_t)ins->imm;
+                for (uint8_t i = 0u; i < callee->param_count; ++i) {
+                    next->values[i] = args[i];
+                    next->initialized[i] = true;
+                }
+                pc = callee->entry_pc;
+                break;
+            }
+
+            case OP_RETURN: {
+                if (depth == 0u || ins->a >= frame->scalar_count ||
+                    !frame->initialized[ins->a] ||
+                    frame->function_index >= bc->function_count) {
+                    qn_diag_set_code(diag, "QN-E7598", 0, 0,
+                                     "invalid function RETURN runtime state");
+                    return QN_ERR_RUNTIME;
+                }
+                const QNFunctionRecord *fn = &bc->functions[frame->function_index];
+                if (pc + 1u != fn->end_pc) {
+                    qn_diag_set_code(diag, "QN-E7598", 0, 0,
+                                     "RETURN is not terminal in function frame");
+                    return QN_ERR_RUNTIME;
+                }
+                uint32_t value = frame->values[ins->a];
+                size_t return_pc = frame->return_pc;
+                uint8_t destination = frame->return_destination;
+                memset(frame, 0, sizeof(*frame));
+                --depth;
+                QNFunctionFrame *caller = &frames[depth];
+                if (destination >= caller->scalar_count ||
+                    caller->initialized[destination]) {
+                    qn_diag_set_code(diag, "QN-E7598", 0, 0,
+                                     "invalid caller return destination");
+                    return QN_ERR_RUNTIME;
+                }
+                caller->values[destination] = value;
+                caller->initialized[destination] = true;
+                pc = return_pc;
+                break;
+            }
+
+            case OP_U32_EMIT:
+                if (depth != 0u || emitted || ins->a >= frame->scalar_count ||
+                    !frame->initialized[ins->a]) {
+                    qn_diag_set_code(diag, "QN-E7599", 0, 0,
+                                     "invalid function-program emit state");
+                    return QN_ERR_RUNTIME;
+                }
+                emitted = true;
+                emitted_id = ins->a;
+                emitted_value = frame->values[ins->a];
+                ++pc;
+                break;
+
+            case OP_END:
+                if (depth != 0u || pc + 1u != bc->instruction_count || !emitted) {
+                    qn_diag_set_code(diag, "QN-E7599", 0, 0,
+                                     "invalid function-program termination");
+                    return QN_ERR_RUNTIME;
+                }
+                terminated = true;
+                pc = bc->instruction_count;
+                break;
+
+            default:
+                qn_diag_set_code(diag, "QN-E7596", 0, 0,
+                                 "unexpected opcode in Step6 function VM");
+                return QN_ERR_RUNTIME;
+        }
+    }
+
+    if (!terminated || !emitted || depth != 0u) {
+        qn_diag_set_code(diag, "QN-E7599", 0, 0,
+                         "function program did not terminate through main END");
+        return QN_ERR_RUNTIME;
+    }
+    qn_finish_u32_scalar_result(bc, route, out, emitted_id, emitted_value);
+    return QN_OK;
+}
+
 static QNStatus qn_vm_run_typed_scalar(
     const QNBytecode *bc,
     uint32_t shots,
@@ -295,6 +527,9 @@ static QNStatus qn_vm_run_typed_scalar(
         qn_diag_set_code(diag, "QN-E7512", 0, 0,
                          "invalid typed scalar bytecode contract");
         return QN_ERR_QBC;
+    }
+    if (qn_qbc_has_functions(bc)) {
+        return qn_vm_run_function_scalar(bc, route, out, diag);
     }
 
     uint32_t values[QN_MAX_SCALARS] = {0};
@@ -700,6 +935,8 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
                 case OP_U32_SET_DIV:
                 case OP_REPEAT_ENTER:
                 case OP_REPEAT_NEXT:
+                case OP_CALL:
+                case OP_RETURN:
                     qn_diag_set_code(
                         diag,
                         "QN-E7415",
@@ -887,6 +1124,40 @@ void qn_print_result(const QNBytecode *bc,
         unsigned bool_count = qn_scalar_bool_count(bc);
         unsigned u32_count = (unsigned)bc->scalar_count - bool_count;
         qn_hex32(result->scalar_output_digest, output_hex);
+        if (qn_qbc_has_functions(bc)) {
+            uint64_t step_bound = 0u;
+            (void)qn_qbc_execution_step_bound(bc, &step_bound);
+            fprintf(stream, "QBIT_NOVA_NATIVE_FUNCTION_RUN_V07_STEP6\n");
+            fprintf(stream, "boundary=native_typed_u32_functions\n");
+            fprintf(stream, "physical_qpu=false\n");
+            fprintf(stream, "qubits=0\n");
+            fprintf(stream, "function_count=%u\n", bc->function_count);
+            fprintf(stream, "main_scalar_slots=%u\n", bc->scalar_count);
+            fprintf(stream, "source_sha256=%s\n", source_hex);
+            fprintf(stream, "qbc_sha256=%s\n", qbc_hex);
+            fprintf(stream, "capabilities=%s\n", capability_text);
+            fprintf(stream, "guard=allowed\n");
+            qn_print_approval_lines(result, stream);
+            qn_print_route_lines(result, stream);
+            fprintf(stream, "scalar_contract=typed-u32-functions-v1\n");
+            fprintf(stream, "qbc_version=8\n");
+            fprintf(stream, "function_table_record_size=12\n");
+            fprintf(stream, "call_opcode=0x66\n");
+            fprintf(stream, "return_opcode=0x67\n");
+            fprintf(stream, "max_functions=%u\n", QN_MAX_FUNCTIONS);
+            fprintf(stream, "max_function_params=%u\n", QN_MAX_FUNCTION_PARAMS);
+            fprintf(stream, "max_call_depth=%u\n", QN_MAX_CALL_DEPTH);
+            fprintf(stream, "recursion=false\n");
+            fprintf(stream, "parameter_passing=by-value\n");
+            fprintf(stream, "execution_step_bound=%llu\n",
+                    (unsigned long long)step_bound);
+            fprintf(stream, "execution_step_limit=%u\n", QN_MAX_EXECUTION_STEPS);
+            fprintf(stream, "implicit_type_conversion=false\n");
+            fprintf(stream, "emitted_scalar_id=%u\n", result->scalar_output_id);
+            fprintf(stream, "emitted_u32=%u\n", result->scalar_output_value);
+            fprintf(stream, "output_sha256=%s\n", output_hex);
+            return;
+        }
         if (qn_qbc_has_bounded_repeat(bc)) {
             uint32_t repeat_count = 0u;
             uint64_t step_bound = 0u;
@@ -1233,33 +1504,57 @@ static QNStatus qn_write_typed_scalar_receipt(
                          sizeof(capability_text));
 
     fprintf(stream, "{\n");
+    bool functions = qn_qbc_has_functions(bc);
     bool bounded_repeat = qn_qbc_has_bounded_repeat(bc);
     bool control_flow = qn_qbc_has_control_flow(bc);
     fprintf(stream, "  \"marker\": \"%s\",\n",
-            bounded_repeat
-                ? "QBIT_NOVA_NATIVE_BOUNDED_REPEAT_RECEIPT_V07_STEP5"
-                : (control_flow
-                    ? "QBIT_NOVA_NATIVE_TYPED_CONTROL_FLOW_RECEIPT_V07_STEP4"
-                    : "QBIT_NOVA_NATIVE_TYPED_SCALAR_RECEIPT_V07_STEP3"));
+            functions
+                ? "QBIT_NOVA_NATIVE_FUNCTION_RECEIPT_V07_STEP6"
+                : (bounded_repeat
+                    ? "QBIT_NOVA_NATIVE_BOUNDED_REPEAT_RECEIPT_V07_STEP5"
+                    : (control_flow
+                        ? "QBIT_NOVA_NATIVE_TYPED_CONTROL_FLOW_RECEIPT_V07_STEP4"
+                        : "QBIT_NOVA_NATIVE_TYPED_SCALAR_RECEIPT_V07_STEP3")));
     fprintf(stream, "  \"creator\": \"Universal Dragon Aslam\",\n");
     fprintf(stream, "  \"boundary\": \"%s\",\n",
-            bounded_repeat
-                ? "native_typed_u32_bounded_repeat"
-                : (control_flow
-                    ? "native_typed_u32_bool_control_flow"
-                    : "native_typed_u32_bool_scalar"));
+            functions
+                ? "native_typed_u32_functions"
+                : (bounded_repeat
+                    ? "native_typed_u32_bounded_repeat"
+                    : (control_flow
+                        ? "native_typed_u32_bool_control_flow"
+                        : "native_typed_u32_bool_scalar")));
     fprintf(stream, "  \"physical_qpu\": false,\n");
     fprintf(stream, "  \"guard\": \"allowed\",\n");
     fprintf(stream, "  \"capabilities\": \"%s\",\n", capability_text);
     qn_write_approval_json(stream, result);
     qn_write_route_json(stream, result);
     fprintf(stream, "  \"scalar_contract\": \"%s\",\n",
-            bounded_repeat
-                ? "typed-u32-bounded-repeat-v1"
-                : (control_flow
-                    ? "typed-u32-bool-ifelse-v1"
-                    : "typed-u32-bool-v1"));
-    if (bounded_repeat) {
+            functions
+                ? "typed-u32-functions-v1"
+                : (bounded_repeat
+                    ? "typed-u32-bounded-repeat-v1"
+                    : (control_flow
+                        ? "typed-u32-bool-ifelse-v1"
+                        : "typed-u32-bool-v1")));
+    if (functions) {
+        uint64_t step_bound = 0u;
+        (void)qn_qbc_execution_step_bound(bc, &step_bound);
+        fprintf(stream, "  \"qbc_version\": 8,\n");
+        fprintf(stream, "  \"function_count\": %u,\n", bc->function_count);
+        fprintf(stream, "  \"function_table_record_size\": 12,\n");
+        fprintf(stream, "  \"main_entry_pc\": %u,\n", bc->main_entry_pc);
+        fprintf(stream, "  \"call_opcode\": \"0x66\",\n");
+        fprintf(stream, "  \"return_opcode\": \"0x67\",\n");
+        fprintf(stream, "  \"max_functions\": %u,\n", QN_MAX_FUNCTIONS);
+        fprintf(stream, "  \"max_function_params\": %u,\n", QN_MAX_FUNCTION_PARAMS);
+        fprintf(stream, "  \"max_call_depth\": %u,\n", QN_MAX_CALL_DEPTH);
+        fprintf(stream, "  \"recursion\": false,\n");
+        fprintf(stream, "  \"parameter_passing\": \"by-value\",\n");
+        fprintf(stream, "  \"execution_step_bound\": %llu,\n",
+                (unsigned long long)step_bound);
+        fprintf(stream, "  \"execution_step_limit\": %u,\n", QN_MAX_EXECUTION_STEPS);
+    } else if (bounded_repeat) {
         uint32_t repeat_count = 0u;
         uint64_t step_bound = 0u;
         for (size_t i = 0; i < bc->instruction_count; ++i) {
@@ -1287,10 +1582,12 @@ static QNStatus qn_write_typed_scalar_receipt(
         fprintf(stream, "  \"jump_if_false_opcode\": \"0x5e\",\n");
         fprintf(stream, "  \"jump_opcode\": \"0x5f\",\n");
     }
-    fprintf(stream, "  \"comparison_ops\": \"eq,ne,lt,le,gt,ge\",\n");
-    fprintf(stream, "  \"comparison_operand_type\": \"u32\",\n");
-    fprintf(stream, "  \"comparison_result_type\": \"bool\",\n");
-    fprintf(stream, "  \"bool_encoding\": \"canonical-0-or-1\",\n");
+    if (!functions) {
+        fprintf(stream, "  \"comparison_ops\": \"eq,ne,lt,le,gt,ge\",\n");
+        fprintf(stream, "  \"comparison_operand_type\": \"u32\",\n");
+        fprintf(stream, "  \"comparison_result_type\": \"bool\",\n");
+        fprintf(stream, "  \"bool_encoding\": \"canonical-0-or-1\",\n");
+    }
     fprintf(stream, "  \"implicit_type_conversion\": false,\n");
     fprintf(stream, "  \"scalar_slots\": %u,\n", bc->scalar_count);
     fprintf(stream, "  \"u32_scalars\": %u,\n", u32_count);
@@ -1460,7 +1757,8 @@ QNStatus qn_write_receipt(const char *path,
     }
 
     if (result->native_scalar_result &&
-        (bc->scalar_bool_mask != 0u || qn_qbc_has_bounded_repeat(bc))) {
+        (bc->scalar_bool_mask != 0u || qn_qbc_has_bounded_repeat(bc) ||
+         qn_qbc_has_functions(bc))) {
         qn_write_typed_scalar_receipt(stream, bc, result);
     } else if (result->native_scalar_result) {
         qn_write_scalar_receipt(stream, bc, result);

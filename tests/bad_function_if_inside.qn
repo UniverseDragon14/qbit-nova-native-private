@@ -1,0 +1,11 @@
+fn bad() -> u32 {
+    let value: u32 = 1
+    if value {
+        emit value
+    } else {
+        emit value
+    }
+    return value
+}
+call bad() -> answer
+emit answer

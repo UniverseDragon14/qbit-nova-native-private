@@ -1,0 +1,11 @@
+fn first(value: u32) -> u32 {
+    call second(value) -> answer
+    return answer
+}
+fn second(value: u32) -> u32 {
+    call first(value) -> answer
+    return answer
+}
+let input: u32 = 1
+call first(input) -> answer
+emit answer

@@ -1,0 +1,6 @@
+let input: u32 = 1
+fn identity(value: u32) -> u32 {
+    return value
+}
+call identity(input) -> answer
+emit answer

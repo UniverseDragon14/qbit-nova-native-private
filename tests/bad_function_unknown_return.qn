@@ -1,0 +1,5 @@
+fn bad() -> u32 {
+    return missing
+}
+call bad() -> answer
+emit answer

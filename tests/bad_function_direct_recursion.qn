@@ -1,0 +1,7 @@
+fn recurse(value: u32) -> u32 {
+    call recurse(value) -> again
+    return again
+}
+let input: u32 = 1
+call recurse(input) -> answer
+emit answer

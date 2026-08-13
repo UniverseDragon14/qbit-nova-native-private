@@ -28,6 +28,9 @@ typedef enum {
     TOK_GT_EQUAL,
     TOK_LBRACE,
     TOK_RBRACE,
+    TOK_LPAREN,
+    TOK_RPAREN,
+    TOK_COMMA,
 
     TOK_QBIT,
     TOK_QREG,
@@ -47,7 +50,10 @@ typedef enum {
     TOK_IF,
     TOK_ELSE,
     TOK_REPEAT,
-    TOK_SET
+    TOK_SET,
+    TOK_FN,
+    TOK_CALL,
+    TOK_RETURN
 } QNTokenKind;
 
 typedef struct {

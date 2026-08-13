@@ -1,0 +1,7 @@
+fn seven() -> u32 {
+    let value: u32 = 7
+    return value
+}
+
+call seven() -> answer
+emit answer

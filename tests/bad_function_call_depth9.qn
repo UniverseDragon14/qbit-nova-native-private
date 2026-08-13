@@ -1,0 +1,47 @@
+fn f1() -> u32 {
+    call f2() -> value
+    return value
+}
+
+fn f2() -> u32 {
+    call f3() -> value
+    return value
+}
+
+fn f3() -> u32 {
+    call f4() -> value
+    return value
+}
+
+fn f4() -> u32 {
+    call f5() -> value
+    return value
+}
+
+fn f5() -> u32 {
+    call f6() -> value
+    return value
+}
+
+fn f6() -> u32 {
+    call f7() -> value
+    return value
+}
+
+fn f7() -> u32 {
+    call f8() -> value
+    return value
+}
+
+fn f8() -> u32 {
+    call f9() -> value
+    return value
+}
+
+fn f9() -> u32 {
+    let value: u32 = 9
+    return value
+}
+
+call f1() -> answer
+emit answer

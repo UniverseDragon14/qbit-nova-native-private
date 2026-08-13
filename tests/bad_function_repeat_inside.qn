@@ -1,0 +1,9 @@
+fn bad() -> u32 {
+    let value: u32 = 1
+    repeat 1 {
+        set value = value + value
+    }
+    return value
+}
+call bad() -> answer
+emit answer

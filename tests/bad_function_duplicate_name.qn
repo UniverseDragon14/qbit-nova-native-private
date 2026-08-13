@@ -1,0 +1,10 @@
+fn same() -> u32 {
+    let value: u32 = 1
+    return value
+}
+fn same() -> u32 {
+    let value: u32 = 2
+    return value
+}
+call same() -> answer
+emit answer

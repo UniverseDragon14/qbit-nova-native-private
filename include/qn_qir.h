@@ -42,7 +42,9 @@ typedef enum {
     QIR_OP_U32_SET_MUL,
     QIR_OP_U32_SET_DIV,
     QIR_OP_REPEAT_ENTER,
-    QIR_OP_REPEAT_NEXT
+    QIR_OP_REPEAT_NEXT,
+    QIR_OP_CALL,
+    QIR_OP_RETURN
 } QNQIROpcode;
 
 typedef struct {
@@ -67,11 +69,23 @@ typedef struct {
     uint32_t imm;
 } QNQIRInstruction;
 
+
+typedef struct {
+    char name[QN_NAME_CAP];
+    uint32_t entry_instruction;
+    uint32_t end_instruction;
+    uint16_t scalar_count;
+    uint8_t param_count;
+} QNQIRFunctionInfo;
+
 typedef struct {
     uint16_t total_qubits;
     uint16_t register_count;
     uint16_t scalar_count;
     uint64_t scalar_bool_mask;
+    uint16_t function_count;
+    uint32_t main_entry_instruction;
+    QNQIRFunctionInfo functions[QN_MAX_FUNCTIONS];
     uint64_t initial_basis;
     uint32_t default_shots;
     uint64_t default_seed;

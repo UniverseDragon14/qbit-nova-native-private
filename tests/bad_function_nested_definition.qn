@@ -1,0 +1,10 @@
+fn outer() -> u32 {
+    fn inner() -> u32 {
+        let value: u32 = 1
+        return value
+    }
+    let value: u32 = 2
+    return value
+}
+call outer() -> answer
+emit answer

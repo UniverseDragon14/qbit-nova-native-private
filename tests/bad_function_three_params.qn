@@ -1,0 +1,6 @@
+fn bad(first: u32, second: u32, third: u32) -> u32 {
+    return first
+}
+let value: u32 = 1
+call bad(value, value) -> answer
+emit answer

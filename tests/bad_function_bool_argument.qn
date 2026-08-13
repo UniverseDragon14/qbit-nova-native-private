@@ -1,0 +1,9 @@
+fn id(a: u32) -> u32 {
+    return a
+}
+
+let left: u32 = 1
+let right: u32 = 2
+flag = left < right
+call id(flag) -> out
+emit out

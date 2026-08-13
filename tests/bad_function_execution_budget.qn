@@ -1,0 +1,107 @@
+fn f6() -> u32 {
+    let leaf: u32 = 1
+    return leaf
+}
+
+fn f5() -> u32 {
+    call f6() -> r0
+    call f6() -> r1
+    call f6() -> r2
+    call f6() -> r3
+    call f6() -> r4
+    call f6() -> r5
+    call f6() -> r6
+    call f6() -> r7
+    call f6() -> r8
+    call f6() -> r9
+    call f6() -> r10
+    call f6() -> r11
+    call f6() -> r12
+    call f6() -> r13
+    call f6() -> r14
+    call f6() -> r15
+    return r15
+}
+
+fn f4() -> u32 {
+    call f5() -> r0
+    call f5() -> r1
+    call f5() -> r2
+    call f5() -> r3
+    call f5() -> r4
+    call f5() -> r5
+    call f5() -> r6
+    call f5() -> r7
+    call f5() -> r8
+    call f5() -> r9
+    call f5() -> r10
+    call f5() -> r11
+    call f5() -> r12
+    call f5() -> r13
+    call f5() -> r14
+    call f5() -> r15
+    return r15
+}
+
+fn f3() -> u32 {
+    call f4() -> r0
+    call f4() -> r1
+    call f4() -> r2
+    call f4() -> r3
+    call f4() -> r4
+    call f4() -> r5
+    call f4() -> r6
+    call f4() -> r7
+    call f4() -> r8
+    call f4() -> r9
+    call f4() -> r10
+    call f4() -> r11
+    call f4() -> r12
+    call f4() -> r13
+    call f4() -> r14
+    call f4() -> r15
+    return r15
+}
+
+fn f2() -> u32 {
+    call f3() -> r0
+    call f3() -> r1
+    call f3() -> r2
+    call f3() -> r3
+    call f3() -> r4
+    call f3() -> r5
+    call f3() -> r6
+    call f3() -> r7
+    call f3() -> r8
+    call f3() -> r9
+    call f3() -> r10
+    call f3() -> r11
+    call f3() -> r12
+    call f3() -> r13
+    call f3() -> r14
+    call f3() -> r15
+    return r15
+}
+
+fn f1() -> u32 {
+    call f2() -> r0
+    call f2() -> r1
+    call f2() -> r2
+    call f2() -> r3
+    call f2() -> r4
+    call f2() -> r5
+    call f2() -> r6
+    call f2() -> r7
+    call f2() -> r8
+    call f2() -> r9
+    call f2() -> r10
+    call f2() -> r11
+    call f2() -> r12
+    call f2() -> r13
+    call f2() -> r14
+    call f2() -> r15
+    return r15
+}
+
+call f1() -> result
+emit result

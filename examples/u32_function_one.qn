@@ -1,0 +1,8 @@
+fn square(value: u32) -> u32 {
+    product = value * value
+    return product
+}
+
+let input: u32 = 9
+call square(input) -> answer
+emit answer

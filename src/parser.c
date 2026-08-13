@@ -10,14 +10,22 @@ typedef struct {
 } Parser;
 
 static const QNToken *peek(Parser *p) { return &p->tokens->items[p->at]; }
-static const QNToken *prev(Parser *p) { return &p->tokens->items[p->at-1]; }
+static const QNToken *prev(Parser *p) { return &p->tokens->items[p->at - 1u]; }
 static bool is(Parser *p, QNTokenKind k) { return peek(p)->kind == k; }
-static bool match(Parser *p, QNTokenKind k) { if (is(p,k)) { ++p->at; return true; } return false; }
+static bool match(Parser *p, QNTokenKind k) {
+    if (is(p, k)) {
+        ++p->at;
+        return true;
+    }
+    return false;
+}
 
 static const QNToken *expect(Parser *p, QNTokenKind k, const char *what) {
-    if (is(p,k)) return &p->tokens->items[p->at++];
+    if (is(p, k)) return &p->tokens->items[p->at++];
     const QNToken *t = peek(p);
-    qn_diag_set(p->diag, t->line, t->column, "expected %s, found %s", what, qn_token_kind_name(t->kind));
+    qn_diag_set(p->diag, t->line, t->column,
+                "expected %s, found %s", what,
+                qn_token_kind_name(t->kind));
     return NULL;
 }
 
@@ -27,7 +35,7 @@ static bool add_stmt(QNProgram *program, QNStmt stmt, QNDiagnostic *diag) {
         return false;
     }
     if (program->count == program->capacity) {
-        size_t cap = program->capacity ? program->capacity * 2 : 128;
+        size_t cap = program->capacity ? program->capacity * 2u : 128u;
         QNStmt *next = realloc(program->items, cap * sizeof(*next));
         if (!next) {
             qn_diag_set(diag, stmt.line, stmt.column, "out of memory");
@@ -72,6 +80,15 @@ void qn_program_free(QNProgram *program) {
     for (size_t i = 0; i < program->count; ++i) {
         qn_stmt_free_contents(&program->items[i]);
     }
+    for (size_t i = 0; i < program->function_count; ++i) {
+        QNFunctionDecl *fn = &program->functions[i];
+        for (size_t j = 0; j < fn->body_count; ++j) {
+            qn_stmt_free_contents(&fn->body_items[j]);
+        }
+        free(fn->body_items);
+        fn->body_items = NULL;
+        fn->body_count = 0u;
+    }
     free(program->items);
     memset(program, 0, sizeof(*program));
 }
@@ -102,7 +119,8 @@ static bool parse_target(Parser *p, QNTarget *out) {
         const QNToken *idx = expect(p, TOK_INT, "qubit index");
         if (!idx || !expect(p, TOK_RBRACKET, "']'")) return false;
         if (idx->int_value > UINT32_MAX) {
-            qn_diag_set(p->diag, idx->line, idx->column, "qubit index too large");
+            qn_diag_set(p->diag, idx->line, idx->column,
+                        "qubit index too large");
             return false;
         }
         out->has_index = true;
@@ -111,17 +129,21 @@ static bool parse_target(Parser *p, QNTarget *out) {
     return true;
 }
 
-static bool parse_state(const char *text, uint32_t width, uint64_t *basis, QNDiagnostic *diag, int line, int col) {
+static bool parse_state(const char *text, uint32_t width,
+                        uint64_t *basis, QNDiagnostic *diag,
+                        int line, int col) {
     size_t len = strlen(text);
-    if (len < 3 || text[0] != '|' || text[len-1] != '>') return false;
-    size_t bits = len - 2;
+    if (len < 3u || text[0] != '|' || text[len - 1u] != '>') return false;
+    size_t bits = len - 2u;
     if (bits != width) {
-        qn_diag_set(diag, line, col, "state width %zu does not match register width %u", bits, width);
+        qn_diag_set(diag, line, col,
+                    "state width %zu does not match register width %u",
+                    bits, width);
         return false;
     }
-    uint64_t v = 0;
-    for (size_t i = 1; i + 1 < len; ++i) {
-        v = (v << 1) | (uint64_t)(text[i] - '0');
+    uint64_t v = 0u;
+    for (size_t i = 1u; i + 1u < len; ++i) {
+        v = (v << 1u) | (uint64_t)(text[i] - '0');
     }
     *basis = v;
     return true;
@@ -189,6 +211,50 @@ static bool parse_scalar_binary(Parser *p, QNStmt *s) {
     return true;
 }
 
+static bool parse_call_after_keyword(Parser *p, QNStmt *s) {
+    s->kind = STMT_CALL;
+    const QNToken *name = expect(p, TOK_IDENT, "function name");
+    if (!name || !expect(p, TOK_LPAREN, "'('") ) return false;
+    snprintf(s->as.call.function, sizeof(s->as.call.function),
+             "%s", name->text);
+
+    uint8_t count = 0u;
+    if (!is(p, TOK_RPAREN)) {
+        for (;;) {
+            if (count >= QN_MAX_FUNCTION_PARAMS) {
+                const QNToken *t = peek(p);
+                qn_diag_set_code(p->diag, "QN-E7572", t->line, t->column,
+                                 "function calls support at most %u arguments",
+                                 QN_MAX_FUNCTION_PARAMS);
+                return false;
+            }
+            const QNToken *arg = expect(p, TOK_IDENT, "u32 argument");
+            if (!arg) return false;
+            snprintf(s->as.call.args[count], sizeof(s->as.call.args[count]),
+                     "%s", arg->text);
+            ++count;
+            if (!match(p, TOK_COMMA)) break;
+        }
+    }
+    if (!expect(p, TOK_RPAREN, "')'") ||
+        !expect(p, TOK_ARROW, "'->'")) return false;
+    const QNToken *output = expect(p, TOK_IDENT, "call result variable");
+    if (!output) return false;
+    s->as.call.arg_count = count;
+    snprintf(s->as.call.output, sizeof(s->as.call.output),
+             "%s", output->text);
+    return true;
+}
+
+static bool parse_return_after_keyword(Parser *p, QNStmt *s) {
+    s->kind = STMT_RETURN;
+    const QNToken *name = expect(p, TOK_IDENT, "u32 return value");
+    if (!name) return false;
+    snprintf(s->as.return_stmt.name, sizeof(s->as.return_stmt.name),
+             "%s", name->text);
+    return true;
+}
+
 static bool parse_branch_statement(Parser *p, QNStmt *s) {
     const QNToken *start = peek(p);
     memset(s, 0, sizeof(*s));
@@ -205,12 +271,8 @@ static bool parse_branch_statement(Parser *p, QNStmt *s) {
                          "repeat inside if is not enabled in Stage 7 Step 5");
         return false;
     }
-    if (match(p, TOK_LET)) {
-        return parse_u32_let_after_keyword(p, s);
-    }
-    if (is(p, TOK_IDENT)) {
-        return parse_scalar_binary(p, s);
-    }
+    if (match(p, TOK_LET)) return parse_u32_let_after_keyword(p, s);
+    if (is(p, TOK_IDENT)) return parse_scalar_binary(p, s);
     if (match(p, TOK_EMIT)) {
         s->kind = STMT_EMIT;
         const QNToken *name = expect(p, TOK_IDENT, "result name");
@@ -224,12 +286,9 @@ static bool parse_branch_statement(Parser *p, QNStmt *s) {
     return false;
 }
 
-static bool parse_scalar_block(Parser *p,
-                               QNStmt **items_out,
-                               size_t *count_out) {
+static bool parse_scalar_block(Parser *p, QNStmt **items_out, size_t *count_out) {
     QNProgram block = {0};
     while (match(p, TOK_NEWLINE)) {}
-
     while (!is(p, TOK_RBRACE)) {
         if (is(p, TOK_EOF)) {
             const QNToken *t = peek(p);
@@ -238,7 +297,6 @@ static bool parse_scalar_block(Parser *p,
             qn_program_free(&block);
             return false;
         }
-
         QNStmt stmt;
         if (!parse_branch_statement(p, &stmt) ||
             !consume_branch_line_end(p) ||
@@ -249,7 +307,6 @@ static bool parse_scalar_block(Parser *p,
         }
         while (match(p, TOK_NEWLINE)) {}
     }
-
     (void)match(p, TOK_RBRACE);
     *items_out = block.items;
     *count_out = block.count;
@@ -261,22 +318,16 @@ static bool parse_set_after_keyword(Parser *p, QNStmt *s) {
     if (!target || !expect(p, TOK_EQUAL, "'='")) return false;
     const QNToken *left = expect(p, TOK_IDENT, "left variable");
     if (!left) return false;
-
-    if (match(p, TOK_PLUS)) {
-        s->kind = STMT_U32_SET_ADD;
-    } else if (match(p, TOK_MINUS)) {
-        s->kind = STMT_U32_SET_SUB;
-    } else if (match(p, TOK_STAR)) {
-        s->kind = STMT_U32_SET_MUL;
-    } else if (match(p, TOK_SLASH)) {
-        s->kind = STMT_U32_SET_DIV;
-    } else {
+    if (match(p, TOK_PLUS)) s->kind = STMT_U32_SET_ADD;
+    else if (match(p, TOK_MINUS)) s->kind = STMT_U32_SET_SUB;
+    else if (match(p, TOK_STAR)) s->kind = STMT_U32_SET_MUL;
+    else if (match(p, TOK_SLASH)) s->kind = STMT_U32_SET_DIV;
+    else {
         const QNToken *t = peek(p);
         qn_diag_set_code(p->diag, "QN-E7559", t->line, t->column,
                          "set requires one of +, -, *, /");
         return false;
     }
-
     const QNToken *right = expect(p, TOK_IDENT, "right variable");
     if (!right) return false;
     snprintf(s->as.scalar_binary.output, sizeof(s->as.scalar_binary.output),
@@ -293,7 +344,6 @@ static bool parse_repeat_body_statement(Parser *p, QNStmt *s) {
     memset(s, 0, sizeof(*s));
     s->line = start->line;
     s->column = start->column;
-
     if (match(p, TOK_REPEAT)) {
         qn_diag_set_code(p->diag, "QN-E7554", start->line, start->column,
                          "nested repeat is not enabled in Stage 7 Step 5");
@@ -314,21 +364,15 @@ static bool parse_repeat_body_statement(Parser *p, QNStmt *s) {
                          "emit inside repeat is not enabled in Stage 7 Step 5");
         return false;
     }
-    if (match(p, TOK_SET)) {
-        return parse_set_after_keyword(p, s);
-    }
-
+    if (match(p, TOK_SET)) return parse_set_after_keyword(p, s);
     qn_diag_set_code(p->diag, "QN-E7559", start->line, start->column,
                      "repeat body permits only explicit set statements");
     return false;
 }
 
-static bool parse_repeat_block(Parser *p,
-                               QNStmt **items_out,
-                               size_t *count_out) {
+static bool parse_repeat_block(Parser *p, QNStmt **items_out, size_t *count_out) {
     QNProgram block = {0};
     while (match(p, TOK_NEWLINE)) {}
-
     while (!is(p, TOK_RBRACE)) {
         if (is(p, TOK_EOF)) {
             const QNToken *t = peek(p);
@@ -347,7 +391,6 @@ static bool parse_repeat_block(Parser *p,
         }
         while (match(p, TOK_NEWLINE)) {}
     }
-
     (void)match(p, TOK_RBRACE);
     if (block.count == 0u) {
         const QNToken *t = prev(p);
@@ -365,11 +408,9 @@ static bool parse_repeat_after_keyword(Parser *p, QNStmt *s) {
     s->kind = STMT_REPEAT;
     const QNToken *count = expect(p, TOK_INT, "repeat iteration literal");
     if (!count) return false;
-    if (count->int_value == 0u ||
-        count->int_value > QN_MAX_REPEAT_ITERATIONS) {
+    if (count->int_value == 0u || count->int_value > QN_MAX_REPEAT_ITERATIONS) {
         qn_diag_set_code(p->diag, "QN-E7550", count->line, count->column,
-                         "repeat count must be 1..%u",
-                         QN_MAX_REPEAT_ITERATIONS);
+                         "repeat count must be 1..%u", QN_MAX_REPEAT_ITERATIONS);
         return false;
     }
     s->as.repeat_stmt.iterations = (uint32_t)count->int_value;
@@ -379,8 +420,7 @@ static bool parse_repeat_after_keyword(Parser *p, QNStmt *s) {
                          "expected '{' to start repeat block");
         return false;
     }
-    if (!parse_repeat_block(p,
-                            &s->as.repeat_stmt.body_items,
+    if (!parse_repeat_block(p, &s->as.repeat_stmt.body_items,
                             &s->as.repeat_stmt.body_count)) {
         qn_stmt_free_contents(s);
         return false;
@@ -394,20 +434,17 @@ static bool parse_if_after_keyword(Parser *p, QNStmt *s) {
     if (!condition) return false;
     snprintf(s->as.if_stmt.condition, sizeof(s->as.if_stmt.condition),
              "%s", condition->text);
-
     if (!match(p, TOK_LBRACE)) {
         const QNToken *t = peek(p);
         qn_diag_set_code(p->diag, "QN-E7533", t->line, t->column,
                          "expected '{' to start if block");
         return false;
     }
-    if (!parse_scalar_block(p,
-                            &s->as.if_stmt.then_items,
+    if (!parse_scalar_block(p, &s->as.if_stmt.then_items,
                             &s->as.if_stmt.then_count)) {
         qn_stmt_free_contents(s);
         return false;
     }
-
     while (match(p, TOK_NEWLINE)) {}
     if (!match(p, TOK_ELSE)) {
         const QNToken *t = peek(p);
@@ -423,8 +460,7 @@ static bool parse_if_after_keyword(Parser *p, QNStmt *s) {
         qn_stmt_free_contents(s);
         return false;
     }
-    if (!parse_scalar_block(p,
-                            &s->as.if_stmt.else_items,
+    if (!parse_scalar_block(p, &s->as.if_stmt.else_items,
                             &s->as.if_stmt.else_count)) {
         qn_stmt_free_contents(s);
         return false;
@@ -432,14 +468,193 @@ static bool parse_if_after_keyword(Parser *p, QNStmt *s) {
     return true;
 }
 
-QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag) {
+static bool function_name_exists(const QNProgram *program, const char *name) {
+    for (size_t i = 0; i < program->function_count; ++i) {
+        if (strcmp(program->functions[i].name, name) == 0) return true;
+    }
+    return false;
+}
+
+static bool parse_function_body_statement(Parser *p, QNStmt *s) {
+    const QNToken *start = peek(p);
+    memset(s, 0, sizeof(*s));
+    s->line = start->line;
+    s->column = start->column;
+
+    if (match(p, TOK_FN)) {
+        qn_diag_set_code(p->diag, "QN-E7573", start->line, start->column,
+                         "nested function definitions are not enabled in Stage 7 Step 6");
+        return false;
+    }
+    if (match(p, TOK_EMIT)) {
+        qn_diag_set_code(p->diag, "QN-E7574", start->line, start->column,
+                         "emit is not allowed inside Step6 functions");
+        return false;
+    }
+    if (match(p, TOK_REPEAT) || match(p, TOK_IF) || match(p, TOK_SET)) {
+        qn_diag_set_code(p->diag, "QN-E7575", start->line, start->column,
+                         "Step6 functions do not enable if, repeat, or set");
+        return false;
+    }
+    if (match(p, TOK_LET)) return parse_u32_let_after_keyword(p, s);
+    if (match(p, TOK_CALL)) return parse_call_after_keyword(p, s);
+    if (match(p, TOK_RETURN)) return parse_return_after_keyword(p, s);
+    if (is(p, TOK_IDENT)) {
+        if (!parse_scalar_binary(p, s)) return false;
+        if (s->kind != STMT_U32_ADD && s->kind != STMT_U32_SUB &&
+            s->kind != STMT_U32_MUL && s->kind != STMT_U32_DIV) {
+            qn_diag_set_code(p->diag, "QN-E7576", start->line, start->column,
+                             "comparisons are not enabled inside Step6 functions");
+            return false;
+        }
+        return true;
+    }
+
+    qn_diag_set_code(p->diag, "QN-E7575", start->line, start->column,
+                     "Step6 function body permits only let, u32 arithmetic, call, and return");
+    return false;
+}
+
+static bool parse_function_block(Parser *p,
+                                 QNStmt **items_out,
+                                 size_t *count_out) {
+    QNProgram block = {0};
+    bool seen_return = false;
+    while (match(p, TOK_NEWLINE)) {}
+
+    while (!is(p, TOK_RBRACE)) {
+        if (is(p, TOK_EOF)) {
+            const QNToken *t = peek(p);
+            qn_diag_set_code(p->diag, "QN-E7577", t->line, t->column,
+                             "unterminated function body; expected '}'");
+            qn_program_free(&block);
+            return false;
+        }
+        if (seen_return) {
+            const QNToken *t = peek(p);
+            qn_diag_set_code(p->diag, "QN-E7578", t->line, t->column,
+                             "return must be the final function statement");
+            qn_program_free(&block);
+            return false;
+        }
+        QNStmt stmt;
+        if (!parse_function_body_statement(p, &stmt) ||
+            !consume_branch_line_end(p) ||
+            !add_stmt(&block, stmt, p->diag)) {
+            qn_stmt_free_contents(&stmt);
+            qn_program_free(&block);
+            return false;
+        }
+        if (stmt.kind == STMT_RETURN) seen_return = true;
+        while (match(p, TOK_NEWLINE)) {}
+    }
+    (void)match(p, TOK_RBRACE);
+    if (!seen_return) {
+        const QNToken *t = prev(p);
+        qn_diag_set_code(p->diag, "QN-E7579", t->line, t->column,
+                         "Step6 function must terminate with return");
+        qn_program_free(&block);
+        return false;
+    }
+    *items_out = block.items;
+    *count_out = block.count;
+    return true;
+}
+
+static bool parse_function_after_keyword(Parser *p,
+                                         QNProgram *program,
+                                         const QNToken *start) {
+    if (program->function_count >= QN_MAX_FUNCTIONS) {
+        qn_diag_set_code(p->diag, "QN-E7570", start->line, start->column,
+                         "function limit exceeded (%u)", QN_MAX_FUNCTIONS);
+        return false;
+    }
+    const QNToken *name = expect(p, TOK_IDENT, "function name");
+    if (!name) return false;
+    if (function_name_exists(program, name->text)) {
+        qn_diag_set_code(p->diag, "QN-E7571", name->line, name->column,
+                         "duplicate function name '%s'", name->text);
+        return false;
+    }
+    if (!expect(p, TOK_LPAREN, "'('")) return false;
+
+    QNFunctionDecl fn;
+    memset(&fn, 0, sizeof(fn));
+    fn.line = start->line;
+    fn.column = start->column;
+    snprintf(fn.name, sizeof(fn.name), "%s", name->text);
+
+    if (!is(p, TOK_RPAREN)) {
+        for (;;) {
+            if (fn.param_count >= QN_MAX_FUNCTION_PARAMS) {
+                const QNToken *t = peek(p);
+                qn_diag_set_code(p->diag, "QN-E7572", t->line, t->column,
+                                 "functions support at most %u parameters",
+                                 QN_MAX_FUNCTION_PARAMS);
+                return false;
+            }
+            const QNToken *param = expect(p, TOK_IDENT, "parameter name");
+            if (!param || !expect(p, TOK_COLON, "':'") ||
+                !expect(p, TOK_U32, "u32")) return false;
+            for (uint8_t i = 0u; i < fn.param_count; ++i) {
+                if (strcmp(fn.params[i], param->text) == 0) {
+                    qn_diag_set_code(p->diag, "QN-E7580",
+                                     param->line, param->column,
+                                     "duplicate parameter name '%s'",
+                                     param->text);
+                    return false;
+                }
+            }
+            snprintf(fn.params[fn.param_count],
+                     sizeof(fn.params[fn.param_count]), "%s", param->text);
+            ++fn.param_count;
+            if (!match(p, TOK_COMMA)) break;
+        }
+    }
+
+    if (!expect(p, TOK_RPAREN, "')'") ||
+        !expect(p, TOK_ARROW, "'->'") ||
+        !expect(p, TOK_U32, "u32 return type")) return false;
+    if (!match(p, TOK_LBRACE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7577", t->line, t->column,
+                         "expected '{' to start function body");
+        return false;
+    }
+    if (!parse_function_block(p, &fn.body_items, &fn.body_count)) {
+        for (size_t i = 0; i < fn.body_count; ++i) {
+            qn_stmt_free_contents(&fn.body_items[i]);
+        }
+        free(fn.body_items);
+        return false;
+    }
+    program->functions[program->function_count++] = fn;
+    return true;
+}
+
+QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out,
+                  QNDiagnostic *diag) {
     memset(out, 0, sizeof(*out));
-    Parser p = {.tokens=tokens,.at=0,.diag=diag};
+    Parser p = {.tokens = tokens, .at = 0u, .diag = diag};
     bool seen_repeat = false;
+    bool seen_main = false;
     while (match(&p, TOK_NEWLINE)) {}
 
     while (!is(&p, TOK_EOF)) {
         const QNToken *start = peek(&p);
+
+        if (match(&p, TOK_FN)) {
+            if (seen_main) {
+                qn_diag_set_code(diag, "QN-E7581", start->line, start->column,
+                                 "function definitions must appear before main statements");
+                goto fail;
+            }
+            if (!parse_function_after_keyword(&p, out, start) ||
+                !consume_line_end(&p)) goto fail;
+            continue;
+        }
+
+        seen_main = true;
         QNStmt s;
         memset(&s, 0, sizeof(s));
         s.line = start->line;
@@ -452,27 +667,28 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             if (!name) goto fail;
             snprintf(s.as.qreg.name, sizeof(s.as.qreg.name), "%s", name->text);
             s.as.qreg.width = single ? 1u : 0u;
-
             if (!single) {
                 if (!expect(&p, TOK_LBRACKET, "'['")) goto fail;
                 const QNToken *width = expect(&p, TOK_INT, "register width");
                 if (!width || !expect(&p, TOK_RBRACKET, "']'")) goto fail;
-                if (width->int_value == 0 || width->int_value > QN_MAX_QUBITS) {
-                    qn_diag_set(diag, width->line, width->column, "register width must be 1..%u", QN_MAX_QUBITS);
+                if (width->int_value == 0u || width->int_value > QN_MAX_QUBITS) {
+                    qn_diag_set(diag, width->line, width->column,
+                                "register width must be 1..%u", QN_MAX_QUBITS);
                     goto fail;
                 }
                 s.as.qreg.width = (uint32_t)width->int_value;
             }
-
             if (match(&p, TOK_ASSIGN)) {
                 const QNToken *state = expect(&p, TOK_STATE, "basis state");
                 if (!state) goto fail;
-                snprintf(s.as.qreg.state_text, sizeof(s.as.qreg.state_text), "%s", state->text);
-                if (!parse_state(state->text, s.as.qreg.width, &s.as.qreg.initial_basis,
-                                 diag, state->line, state->column)) goto fail;
+                snprintf(s.as.qreg.state_text, sizeof(s.as.qreg.state_text),
+                         "%s", state->text);
+                if (!parse_state(state->text, s.as.qreg.width,
+                                 &s.as.qreg.initial_basis, diag,
+                                 state->line, state->column)) goto fail;
             } else {
                 snprintf(s.as.qreg.state_text, sizeof(s.as.qreg.state_text), "|0>");
-                s.as.qreg.initial_basis = 0;
+                s.as.qreg.initial_basis = 0u;
             }
         } else if (match(&p, TOK_H) || match(&p, TOK_X) || match(&p, TOK_Z)) {
             QNTokenKind k = prev(&p)->kind;
@@ -480,7 +696,8 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             if (!parse_target(&p, &s.as.unary.target)) goto fail;
         } else if (match(&p, TOK_CX)) {
             s.kind = STMT_CX;
-            if (!parse_target(&p, &s.as.cx.control) || !parse_target(&p, &s.as.cx.target)) goto fail;
+            if (!parse_target(&p, &s.as.cx.control) ||
+                !parse_target(&p, &s.as.cx.target)) goto fail;
         } else if (match(&p, TOK_GHZ)) {
             s.kind = STMT_GHZ;
             const QNToken *name = expect(&p, TOK_IDENT, "register name");
@@ -493,7 +710,8 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             const QNToken *output = expect(&p, TOK_IDENT, "result name");
             if (!output) goto fail;
             snprintf(s.as.measure.reg, sizeof(s.as.measure.reg), "%s", reg->text);
-            snprintf(s.as.measure.output, sizeof(s.as.measure.output), "%s", output->text);
+            snprintf(s.as.measure.output, sizeof(s.as.measure.output),
+                     "%s", output->text);
         } else if (match(&p, TOK_EMIT)) {
             s.kind = STMT_EMIT;
             const QNToken *name = expect(&p, TOK_IDENT, "result name");
@@ -503,7 +721,6 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             s.kind = STMT_REQUIRES;
             const QNToken *first = expect(&p, TOK_IDENT, "capability name");
             if (!first) goto fail;
-
             if (match(&p, TOK_DOT)) {
                 const QNToken *second = expect(&p, TOK_IDENT, "capability suffix");
                 if (!second) goto fail;
@@ -528,6 +745,12 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             s.as.number.value = n->int_value;
         } else if (match(&p, TOK_LET)) {
             if (!parse_u32_let_after_keyword(&p, &s)) goto fail;
+        } else if (match(&p, TOK_CALL)) {
+            if (!parse_call_after_keyword(&p, &s)) goto fail;
+        } else if (match(&p, TOK_RETURN)) {
+            qn_diag_set_code(diag, "QN-E7582", start->line, start->column,
+                             "return is legal only inside a Step6 function");
+            goto fail;
         } else if (match(&p, TOK_IF)) {
             if (!parse_if_after_keyword(&p, &s)) goto fail;
         } else if (match(&p, TOK_REPEAT)) {
@@ -550,8 +773,7 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             const QNToken *output = expect(&p, TOK_IDENT, "vector result name");
             if (!output) goto fail;
             snprintf(s.as.vector_add_u32.output,
-                     sizeof(s.as.vector_add_u32.output),
-                     "%s", output->text);
+                     sizeof(s.as.vector_add_u32.output), "%s", output->text);
         } else {
             qn_diag_set(diag, start->line, start->column,
                         "unexpected token %s", qn_token_kind_name(start->kind));
@@ -569,6 +791,7 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out, QNDiagnostic *diag)
             goto fail;
         }
     }
+
     return QN_OK;
 
 fail:
