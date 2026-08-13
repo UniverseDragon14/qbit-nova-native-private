@@ -2030,6 +2030,7 @@ for SPEC in \
   'bad_function_nested_definition 4 QN-E7573' \
   'bad_function_no_main_call 5 QN-E7591' \
   'bad_function_repeat_inside 4 QN-E7575' \
+  'bad_function_set_inside 4 QN-E7575' \
   'bad_function_three_params 4 QN-E7572' \
   'bad_function_unknown_argument 5 QN-E7585' \
   'bad_function_unknown_call 5 QN-E7583' \
