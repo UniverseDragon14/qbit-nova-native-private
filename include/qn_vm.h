@@ -5,6 +5,13 @@
 #include "qn_gpu_routing.h"
 
 typedef struct {
+    uint32_t values[QN_MAX_RUNTIME_INPUTS];
+    uint16_t count;
+    bool provided;
+    uint8_t input_sha256[32];
+} QNRuntimeInputs;
+
+typedef struct {
     uint64_t state;
     uint64_t count;
 } QNHistogramEntry;
@@ -44,6 +51,10 @@ typedef struct {
     uint32_t scalar_output_value;
     bool scalar_output_is_bool;
     uint8_t scalar_output_digest[32];
+    bool runtime_inputs_provided;
+    uint16_t runtime_input_abi;
+    uint16_t runtime_input_count;
+    uint8_t runtime_input_digest[32];
     QNHistogramEntry *entries;
     size_t entry_count;
     uint8_t qbc_digest[32];
@@ -57,6 +68,14 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
                            const QNGpuQvmRoute *route,
                            QNRunResult *out,
                            QNDiagnostic *diag);
+QNStatus qn_vm_run_guarded_with_inputs(const QNBytecode *bc,
+                                       uint32_t shots,
+                                       uint64_t seed,
+                                       const QNGuardPolicy *policy,
+                                       const QNGpuQvmRoute *route,
+                                       const QNRuntimeInputs *inputs,
+                                       QNRunResult *out,
+                                       QNDiagnostic *diag);
 void qn_print_result(const QNBytecode *bc, const QNRunResult *result, FILE *stream);
 QNStatus qn_write_receipt(const char *path, const QNBytecode *bc,
                           const QNRunResult *result, QNDiagnostic *diag);

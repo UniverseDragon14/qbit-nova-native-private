@@ -159,6 +159,7 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
     }
 
     bool scalar_program = qn_qbc_is_typed_scalar_program(bc);
+    bool runtime_input_program = qn_qbc_has_runtime_inputs(bc);
     bool function_program = qn_qbc_has_functions(bc);
     bool bounded_repeat = qn_qbc_has_bounded_repeat(bc);
     bool pure_u32_scalar = qn_qbc_is_u32_scalar_program(bc);
@@ -166,15 +167,17 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
         out->operation,
         sizeof(out->operation),
         scalar_program
-            ? (function_program
-                ? "native-function-program"
-                : (bounded_repeat
-                    ? "bounded-repeat-program"
-                    : (pure_u32_scalar
-                        ? "u32-scalar-program"
-                        : (qn_qbc_has_control_flow(bc)
-                            ? "typed-control-flow-program"
-                            : "typed-scalar-program"))))
+            ? (runtime_input_program
+                ? "runtime-input-program"
+                : (function_program
+                    ? "native-function-program"
+                    : (bounded_repeat
+                        ? "bounded-repeat-program"
+                        : (pure_u32_scalar
+                            ? "u32-scalar-program"
+                            : (qn_qbc_has_control_flow(bc)
+                                ? "typed-control-flow-program"
+                                : "typed-scalar-program")))))
             : "quantum-state-simulation"
     );
 

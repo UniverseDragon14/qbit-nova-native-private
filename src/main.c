@@ -12,6 +12,7 @@
 #include "qn_gpu_compute.h"
 #include "qn_gpu_routing.h"
 
+#include <ctype.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -51,6 +52,7 @@ static void usage(FILE *f) {
         "            [--revocation-store-file STORE]\n"
         "            [--approval-file token.qna --approval-key-file KEY]\n"
         "            [--backend cpu|auto|vulkan]\n"
+        "            [--input name=decimal-u32]...\n"
         "            [--now UNIX] [--receipt file.json]\n"
         "  qnova exec <file.qbc> [same execution options]\n"
         "  qnova version\n");
@@ -136,6 +138,8 @@ typedef struct {
     bool has_approval_now;
     QNGpuBackendRequest backend;
     bool backend_explicit;
+    const char *input_bindings[QN_MAX_RUNTIME_INPUTS];
+    uint16_t input_binding_count;
     QNGuardPolicy policy;
 } RunOptions;
 
@@ -181,6 +185,13 @@ static void parse_run_opts(int argc,
                 exit(QN_ERR_PARSE);
             }
             options->backend_explicit=true;
+        } else if(!strcmp(argv[i],"--input") && i+1<argc) {
+            if(options->input_binding_count >= QN_MAX_RUNTIME_INPUTS) {
+                fprintf(stderr,"too many --input bindings (max %u)\n",
+                        QN_MAX_RUNTIME_INPUTS);
+                exit(QN_ERR_PARSE);
+            }
+            options->input_bindings[options->input_binding_count++] = argv[++i];
         } else if(!strcmp(argv[i],"--now") && i+1<argc) {
             options->approval_now=parse_u64(argv[++i],"now");
             options->has_approval_now=true;
@@ -191,6 +202,157 @@ static void parse_run_opts(int argc,
     }
 }
 
+
+
+static bool runtime_input_identifier_valid(const char *name) {
+    if (!name || !name[0]) return false;
+    unsigned char first = (unsigned char)name[0];
+    if (!(isalpha(first) || first == '_')) return false;
+    for (size_t i = 1u; name[i]; ++i) {
+        unsigned char c = (unsigned char)name[i];
+        if (!(isalnum(c) || c == '_')) return false;
+    }
+    return true;
+}
+
+static bool parse_runtime_u32(const char *text, uint32_t *value_out) {
+    if (!text || !text[0] || !value_out) return false;
+    uint64_t value = 0u;
+    for (size_t i = 0u; text[i]; ++i) {
+        unsigned char c = (unsigned char)text[i];
+        if (c < '0' || c > '9') return false;
+        value = value * UINT64_C(10) + (uint64_t)(c - '0');
+        if (value > UINT32_MAX) return false;
+    }
+    *value_out = (uint32_t)value;
+    return true;
+}
+
+static void runtime_input_digest(const QNBytecode *bc,
+                                 QNRuntimeInputs *inputs) {
+    static const uint8_t domain[] = "QN_RUNTIME_INPUT_V1";
+    uint8_t canonical[
+        (sizeof(domain) - 1u) +
+        QN_MAX_RUNTIME_INPUTS * (2u + 32u + 4u)
+    ];
+    size_t at = 0u;
+
+    memcpy(canonical + at, domain, sizeof(domain) - 1u);
+    at += sizeof(domain) - 1u;
+
+    for (uint16_t i = 0u; i < bc->input_count; ++i) {
+        canonical[at++] = (uint8_t)i;
+        canonical[at++] = (uint8_t)(i >> 8);
+        memcpy(canonical + at, bc->inputs[i].input_name_sha256, 32);
+        at += 32u;
+        uint32_t value = inputs->values[i];
+        canonical[at++] = (uint8_t)value;
+        canonical[at++] = (uint8_t)(value >> 8);
+        canonical[at++] = (uint8_t)(value >> 16);
+        canonical[at++] = (uint8_t)(value >> 24);
+    }
+
+    qn_sha256(canonical, at, inputs->input_sha256);
+}
+
+static QNStatus resolve_runtime_inputs(const QNBytecode *bc,
+                                       const RunOptions *options,
+                                       QNRuntimeInputs *out,
+                                       QNDiagnostic *diag) {
+    memset(out, 0, sizeof(*out));
+
+    if (!qn_qbc_has_runtime_inputs(bc)) {
+        if (options->input_binding_count != 0u) {
+            qn_diag_set_code(diag, "QN-E7617", 0, 0,
+                             "--input is not accepted by this QBC program");
+            return QN_ERR_PARSE;
+        }
+        return QN_OK;
+    }
+
+    if (options->input_binding_count != bc->input_count) {
+        qn_diag_set_code(diag, "QN-E7618", 0, 0,
+                         "runtime input binding count mismatch: expected %u, got %u",
+                         bc->input_count, options->input_binding_count);
+        return QN_ERR_PARSE;
+    }
+
+    bool seen[QN_MAX_RUNTIME_INPUTS] = {false};
+
+    for (uint16_t binding = 0u;
+         binding < options->input_binding_count;
+         ++binding) {
+        const char *text = options->input_bindings[binding];
+        const char *eq = text ? strchr(text, '=') : NULL;
+        if (!eq || eq == text || eq[1] == '\0') {
+            qn_diag_set_code(diag, "QN-E7619", 0, 0,
+                             "malformed runtime input binding");
+            return QN_ERR_PARSE;
+        }
+
+        size_t name_len = (size_t)(eq - text);
+        if (name_len == 0u || name_len >= QN_NAME_CAP) {
+            qn_diag_set_code(diag, "QN-E7619", 0, 0,
+                             "runtime input name is invalid");
+            return QN_ERR_PARSE;
+        }
+
+        char name[QN_NAME_CAP];
+        memcpy(name, text, name_len);
+        name[name_len] = '\0';
+        if (!runtime_input_identifier_valid(name)) {
+            qn_diag_set_code(diag, "QN-E7619", 0, 0,
+                             "runtime input name is not a valid identifier");
+            return QN_ERR_PARSE;
+        }
+
+        uint32_t value = 0u;
+        if (!parse_runtime_u32(eq + 1, &value)) {
+            qn_diag_set_code(diag, "QN-E7620", 0, 0,
+                             "runtime input value must be decimal u32");
+            return QN_ERR_PARSE;
+        }
+
+        uint8_t name_digest[32];
+        qn_sha256((const uint8_t *)name, strlen(name), name_digest);
+
+        int matched = -1;
+        for (uint16_t i = 0u; i < bc->input_count; ++i) {
+            if (memcmp(name_digest, bc->inputs[i].input_name_sha256, 32) == 0) {
+                matched = (int)i;
+                break;
+            }
+        }
+
+        if (matched < 0) {
+            qn_diag_set_code(diag, "QN-E7621", 0, 0,
+                             "unknown runtime input '%s'", name);
+            return QN_ERR_PARSE;
+        }
+
+        if (seen[matched]) {
+            qn_diag_set_code(diag, "QN-E7622", 0, 0,
+                             "duplicate runtime input binding '%s'", name);
+            return QN_ERR_PARSE;
+        }
+
+        seen[matched] = true;
+        out->values[matched] = value;
+    }
+
+    for (uint16_t i = 0u; i < bc->input_count; ++i) {
+        if (!seen[i]) {
+            qn_diag_set_code(diag, "QN-E7623", 0, 0,
+                             "missing runtime input binding at index %u", i);
+            return QN_ERR_PARSE;
+        }
+    }
+
+    out->count = bc->input_count;
+    out->provided = true;
+    runtime_input_digest(bc, out);
+    return QN_OK;
+}
 
 static uint64_t current_unix_time(void) {
     time_t now = time(NULL);
@@ -1341,6 +1503,13 @@ int main(int argc,char **argv) {
         }
         if(st!=QN_OK) return print_diag(st,&diag);
 
+        QNRuntimeInputs runtime_inputs;
+        st=resolve_runtime_inputs(&bc,&options,&runtime_inputs,&diag);
+        if(st!=QN_OK) {
+            qn_bytecode_free(&bc);
+            return print_diag(st,&diag);
+        }
+
         st=apply_approval_to_policy(
             &options,
             &bc,
@@ -1426,12 +1595,13 @@ int main(int argc,char **argv) {
         }
 
         QNRunResult result={0};
-        st=qn_vm_run_guarded(
+        st=qn_vm_run_guarded_with_inputs(
             &bc,
             options.shots,
             options.seed,
             &options.policy,
             &qvm_route,
+            runtime_inputs.provided ? &runtime_inputs : NULL,
             &result,
             &diag
         );

@@ -1,0 +1,8 @@
+fn add(a: u32, b: u32) -> u32 {
+    value = a + b
+    return value
+}
+input left: u32
+input right: u32
+call add(left, right) -> total
+emit total

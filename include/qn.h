@@ -25,6 +25,7 @@
 #define QN_MAX_FUNCTIONS 16u
 #define QN_MAX_FUNCTION_PARAMS 2u
 #define QN_MAX_CALL_DEPTH 8u
+#define QN_MAX_RUNTIME_INPUTS 16u
 #define QN_NAME_CAP 64u
 #define QN_PATH_CAP 4096u
 

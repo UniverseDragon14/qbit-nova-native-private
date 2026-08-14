@@ -79,6 +79,13 @@ typedef struct {
 } QNQIRFunctionInfo;
 
 typedef struct {
+    uint8_t input_name_sha256[32];
+    uint16_t main_scalar_slot;
+    uint8_t type;
+    uint8_t flags;
+} QNQIRInputInfo;
+
+typedef struct {
     uint16_t total_qubits;
     uint16_t register_count;
     uint16_t scalar_count;
@@ -86,6 +93,9 @@ typedef struct {
     uint16_t function_count;
     uint32_t main_entry_instruction;
     QNQIRFunctionInfo functions[QN_MAX_FUNCTIONS];
+    uint16_t input_count;
+    uint16_t input_abi_version;
+    QNQIRInputInfo inputs[QN_MAX_RUNTIME_INPUTS];
     uint64_t initial_basis;
     uint32_t default_shots;
     uint64_t default_seed;

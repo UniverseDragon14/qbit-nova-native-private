@@ -1,0 +1,61 @@
+QBIT NOVA NATIVE
+STAGE 7 STEP 7
+DESIGN AMENDMENT A1
+RESERVED-KEYWORD INPUT IDENTIFIERS
+==================================
+
+BASE DESIGN LOCK SHA256
+-----------------------
+879ec34f068a5ef0c26928ef78bf5fecec61d837f3f33823ecea2a0101fded12
+
+DISCOVERY
+---------
+The frozen Step6 lexer reserves language keywords before parsing.
+In particular, the source spelling "x" is tokenized as TOK_X for the
+quantum X gate, not TOK_IDENT.
+
+The Step7 design-lock examples used:
+
+input x: u32
+input y: u32
+
+That illustrative spelling collides with the already-frozen lexer
+keyword namespace.
+
+DECISION
+--------
+Preserve all Step6 and earlier lexical behavior.
+
+Step7 runtime input names MUST be ordinary non-keyword identifiers that
+the frozen lexer classifies as TOK_IDENT.
+
+Reserved language keywords are not valid runtime input names.
+
+Use illustrative names such as:
+
+input price: u32
+input qty: u32
+
+sum = price + qty
+emit sum
+
+CLI:
+
+qnova run program.qn --input price=120 --input qty=3
+
+This amendment does NOT change:
+
+- QBC v9 header size 104
+- input record size 36
+- input ABI version 1
+- canonical input slot prefix 0..N-1
+- input-name SHA-256 identity
+- runtime digest format
+- VM binding model
+- receipt redaction
+- CPU-only routing
+- any frozen QBC v1-v8 bytes
+- Step6 function ABI
+
+The original design-lock file is not edited.
+This file is a narrow explicit supplement only.

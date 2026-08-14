@@ -20,6 +20,45 @@ static bool match(Parser *p, QNTokenKind k) {
     return false;
 }
 
+static bool is_contextual_input_declaration(Parser *p) {
+    const QNToken *current = peek(p);
+
+    if (current->kind != TOK_IDENT ||
+        strcmp(current->text, "input") != 0) {
+        return false;
+    }
+
+    if (p->at + 1u >= p->tokens->count) {
+        return false;
+    }
+
+    /*
+     * "input" remains a legal frozen identifier.
+     *
+     * Only statement-position syntax shaped like:
+     *
+     *     input <identifier> ...
+     *
+     * is interpreted as a Step7 runtime-input declaration.
+     *
+     * Examples preserved as identifiers:
+     *
+     *     let input: u32 = 9
+     *     input = left + right
+     *     call input(value) -> result
+     */
+    return p->tokens->items[p->at + 1u].kind == TOK_IDENT;
+}
+
+static bool match_contextual_input_declaration(Parser *p) {
+    if (!is_contextual_input_declaration(p)) {
+        return false;
+    }
+
+    ++p->at;
+    return true;
+}
+
 static const QNToken *expect(Parser *p, QNTokenKind k, const char *what) {
     if (is(p, k)) return &p->tokens->items[p->at++];
     const QNToken *t = peek(p);
@@ -475,6 +514,50 @@ static bool function_name_exists(const QNProgram *program, const char *name) {
     return false;
 }
 
+static bool input_name_exists(const QNProgram *program, const char *name) {
+    for (size_t i = 0u; i < program->input_count; ++i) {
+        if (strcmp(program->inputs[i].name, name) == 0) return true;
+    }
+    return false;
+}
+
+static bool parse_input_after_keyword(Parser *p,
+                                      QNProgram *program,
+                                      const QNToken *start) {
+    if (program->input_count >= QN_MAX_RUNTIME_INPUTS) {
+        qn_diag_set_code(p->diag, "QN-E7600", start->line, start->column,
+                         "runtime input limit exceeded (%u)",
+                         QN_MAX_RUNTIME_INPUTS);
+        return false;
+    }
+
+    const QNToken *name = expect(p, TOK_IDENT, "runtime input name");
+    if (!name || !expect(p, TOK_COLON, "':'")) return false;
+
+    if (!match(p, TOK_U32)) {
+        const QNToken *type = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7604", type->line, type->column,
+                         "Stage 7 Step 7 runtime inputs support u32 only");
+        return false;
+    }
+
+    if (input_name_exists(program, name->text)) {
+        qn_diag_set_code(p->diag, "QN-E7603", name->line, name->column,
+                         "duplicate runtime input '%s'", name->text);
+        return false;
+    }
+
+    QNInputDecl *decl = &program->inputs[program->input_count++];
+    memset(decl, 0, sizeof(*decl));
+    snprintf(decl->name, sizeof(decl->name), "%s", name->text);
+    decl->line = start->line;
+    decl->column = start->column;
+    qn_sha256((const uint8_t *)name->text,
+              strlen(name->text),
+              decl->name_sha256);
+    return true;
+}
+
 static bool parse_function_body_statement(Parser *p, QNStmt *s) {
     const QNToken *start = peek(p);
     memset(s, 0, sizeof(*s));
@@ -484,6 +567,11 @@ static bool parse_function_body_statement(Parser *p, QNStmt *s) {
     if (match(p, TOK_FN)) {
         qn_diag_set_code(p->diag, "QN-E7573", start->line, start->column,
                          "nested function definitions are not enabled in Stage 7 Step 6");
+        return false;
+    }
+    if (match_contextual_input_declaration(p)) {
+        qn_diag_set_code(p->diag, "QN-E7605", start->line, start->column,
+                         "runtime input declarations are top-level only");
         return false;
     }
     if (match(p, TOK_EMIT)) {
@@ -637,6 +725,7 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out,
     memset(out, 0, sizeof(*out));
     Parser p = {.tokens = tokens, .at = 0u, .diag = diag};
     bool seen_repeat = false;
+    bool seen_inputs = false;
     bool seen_main = false;
     while (match(&p, TOK_NEWLINE)) {}
 
@@ -644,12 +733,24 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out,
         const QNToken *start = peek(&p);
 
         if (match(&p, TOK_FN)) {
-            if (seen_main) {
+            if (seen_inputs || seen_main) {
                 qn_diag_set_code(diag, "QN-E7581", start->line, start->column,
-                                 "function definitions must appear before main statements");
+                                 "function definitions must appear before runtime inputs and main statements");
                 goto fail;
             }
             if (!parse_function_after_keyword(&p, out, start) ||
+                !consume_line_end(&p)) goto fail;
+            continue;
+        }
+
+        if (match_contextual_input_declaration(&p)) {
+            if (seen_main) {
+                qn_diag_set_code(diag, "QN-E7602", start->line, start->column,
+                                 "runtime input declarations must appear before main statements");
+                goto fail;
+            }
+            seen_inputs = true;
+            if (!parse_input_after_keyword(&p, out, start) ||
                 !consume_line_end(&p)) goto fail;
             continue;
         }

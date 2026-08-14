@@ -1,0 +1,3 @@
+input value: u32
+let value: u32 = 1
+emit value

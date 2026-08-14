@@ -1,0 +1,4 @@
+input price: u32
+input qty: u32
+sum = price + qty
+emit sum

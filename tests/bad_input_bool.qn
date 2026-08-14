@@ -1,0 +1,2 @@
+input flag: bool
+emit flag

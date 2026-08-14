@@ -1,0 +1,17 @@
+input in0: u32
+input in1: u32
+input in2: u32
+input in3: u32
+input in4: u32
+input in5: u32
+input in6: u32
+input in7: u32
+input in8: u32
+input in9: u32
+input in10: u32
+input in11: u32
+input in12: u32
+input in13: u32
+input in14: u32
+input in15: u32
+emit in15

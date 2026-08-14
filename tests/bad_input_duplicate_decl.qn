@@ -1,0 +1,3 @@
+input value: u32
+input value: u32
+emit value

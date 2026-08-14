@@ -890,6 +890,165 @@ fail:
     return QN_ERR_SEMANTIC;
 }
 
+
+static QNStatus qn_qir_build_runtime_input_program(const QNProgram *program,
+                                                    const uint8_t source_digest[32],
+                                                    QNQIRProgram *out,
+                                                    QNDiagnostic *diag) {
+    memset(out, 0, sizeof(*out));
+    memcpy(out->source_digest, source_digest, 32);
+    out->default_shots = 1u;
+    out->default_seed = 1u;
+
+    if (program->input_count == 0u ||
+        program->input_count > QN_MAX_RUNTIME_INPUTS) {
+        qn_diag_set_code(diag, "QN-E7600", 1, 1,
+                         "invalid Stage7 runtime input count");
+        return QN_ERR_SEMANTIC;
+    }
+    if (program->function_count > QN_MAX_FUNCTIONS) {
+        qn_diag_set_code(diag, "QN-E7570", 1, 1,
+                         "invalid Step6 function count");
+        return QN_ERR_SEMANTIC;
+    }
+
+    bool call_graph[QN_MAX_FUNCTIONS][QN_MAX_FUNCTIONS] = {{false}};
+    out->function_count = (uint16_t)program->function_count;
+    for (size_t i = 0u; i < program->function_count; ++i) {
+        if (!compile_function_body(out, program, i, call_graph, diag)) goto fail;
+    }
+    if (!validate_function_call_graph(program->function_count,
+                                      call_graph, diag)) goto fail;
+
+    if (out->instruction_count > UINT32_MAX) goto fail;
+    out->main_entry_instruction = (uint32_t)out->instruction_count;
+    out->input_count = (uint16_t)program->input_count;
+    out->input_abi_version = QN_RUNTIME_INPUT_ABI_V1;
+
+    for (size_t i = 0u; i < program->input_count; ++i) {
+        const QNInputDecl *decl = &program->inputs[i];
+        int id = declare_scalar(out, decl->name, QIR_TYPE_U32,
+                                decl->line, decl->column, diag);
+        if (id < 0) goto fail;
+        if ((size_t)id != i) {
+            qn_diag_set_code(diag, "QN-E7606", decl->line, decl->column,
+                             "runtime input scalar allocation is not canonical");
+            goto fail;
+        }
+        QNQIRInputInfo *meta = &out->inputs[i];
+        memcpy(meta->input_name_sha256, decl->name_sha256, 32);
+        meta->main_scalar_slot = (uint16_t)id;
+        meta->type = QN_RUNTIME_INPUT_TYPE_U32;
+        meta->flags = 0u;
+    }
+
+    bool emitted = false;
+    for (size_t i = 0u; i < program->count; ++i) {
+        const QNStmt *stmt = &program->items[i];
+        QNQIRInstruction ins;
+        memset(&ins, 0, sizeof(ins));
+        ins.line = stmt->line;
+        ins.column = stmt->column;
+
+        if (emitted) {
+            qn_diag_set_code(diag, "QN-E7607", stmt->line, stmt->column,
+                             "Step7 runtime-input main must terminate at emit");
+            goto fail;
+        }
+
+        switch (stmt->kind) {
+            case STMT_U32_LET: {
+                int id = declare_scalar(out, stmt->as.u32_let.name,
+                                        QIR_TYPE_U32,
+                                        stmt->line, stmt->column, diag);
+                if (id < 0) goto fail;
+                ins.opcode = QIR_OP_U32_CONST;
+                ins.out = scalar_value(out, (uint16_t)id);
+                ins.imm = stmt->as.u32_let.value;
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+            }
+            case STMT_U32_ADD:
+            case STMT_U32_SUB:
+            case STMT_U32_MUL:
+            case STMT_U32_DIV: {
+                int left = find_scalar(out, stmt->as.scalar_binary.left);
+                int right = find_scalar(out, stmt->as.scalar_binary.right);
+                if (left < 0 || right < 0 ||
+                    out->scalars[left].type != QIR_TYPE_U32 ||
+                    out->scalars[right].type != QIR_TYPE_U32) {
+                    qn_diag_set_code(diag, "QN-E7608", stmt->line, stmt->column,
+                                     "Step7 runtime-input arithmetic requires initialized u32 operands");
+                    goto fail;
+                }
+                int output = declare_scalar(out, stmt->as.scalar_binary.output,
+                                            QIR_TYPE_U32,
+                                            stmt->line, stmt->column, diag);
+                if (output < 0) goto fail;
+                ins.opcode = stmt->kind == STMT_U32_ADD ? QIR_OP_U32_ADD :
+                             stmt->kind == STMT_U32_SUB ? QIR_OP_U32_SUB :
+                             stmt->kind == STMT_U32_MUL ? QIR_OP_U32_MUL :
+                                                         QIR_OP_U32_DIV;
+                ins.a = scalar_value(out, (uint16_t)left);
+                ins.b = scalar_value(out, (uint16_t)right);
+                ins.out = scalar_value(out, (uint16_t)output);
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+            }
+            case STMT_CALL: {
+                QNFunctionScope scope;
+                memset(&scope, 0, sizeof(scope));
+                scope.count = out->scalar_count;
+                memcpy(scope.scalars, out->scalars,
+                       out->scalar_count * sizeof(out->scalars[0]));
+                bool saw_call = false;
+                if (!compile_function_call(out, program, &scope, stmt,
+                                           call_graph, -1, &saw_call, diag)) goto fail;
+                out->scalar_count = scope.count;
+                memcpy(out->scalars, scope.scalars,
+                       scope.count * sizeof(scope.scalars[0]));
+                break;
+            }
+            case STMT_EMIT: {
+                if (i + 1u != program->count) {
+                    qn_diag_set_code(diag, "QN-E7607", stmt->line, stmt->column,
+                                     "Step7 runtime-input emit must be final");
+                    goto fail;
+                }
+                int id = find_scalar(out, stmt->as.emit.name);
+                if (id < 0 || out->scalars[id].type != QIR_TYPE_U32) {
+                    qn_diag_set_code(diag, "QN-E7608", stmt->line, stmt->column,
+                                     "emit references unknown u32 scalar '%s'",
+                                     stmt->as.emit.name);
+                    goto fail;
+                }
+                ins.opcode = QIR_OP_U32_EMIT;
+                ins.a = scalar_value(out, (uint16_t)id);
+                if (!append_qir(out, ins, diag)) goto fail;
+                emitted = true;
+                break;
+            }
+            default:
+                qn_diag_set_code(diag, "QN-E7609", stmt->line, stmt->column,
+                                 "Step7 runtime-input main permits only u32 let/arithmetic/call/emit");
+                goto fail;
+        }
+    }
+
+    if (!emitted || out->scalar_count < out->input_count) {
+        qn_diag_set_code(diag, "QN-E7610", 1, 1,
+                         "Step7 runtime-input main must emit exactly one u32 result");
+        goto fail;
+    }
+
+    out->capability_mask = QN_CAP_COMPUTE_U32_SCALAR | QN_CAP_EVIDENCE_EMIT;
+    return QN_OK;
+
+fail:
+    qn_qir_free(out);
+    return QN_ERR_SEMANTIC;
+}
+
 void qn_qir_free(QNQIRProgram *qir) {
     if (!qir) return;
     free(qir->instructions);
@@ -954,6 +1113,9 @@ QNStatus qn_qir_build(const QNProgram *program,
             qn_diag_set(diag, 0, 0, "invalid QIR build arguments");
         }
         return QN_ERR_RUNTIME;
+    }
+    if (program->input_count > 0u) {
+        return qn_qir_build_runtime_input_program(program, source_digest, out, diag);
     }
     {
         bool has_function_call = false;
@@ -1686,6 +1848,15 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
         out->functions[i].param_count = qir->functions[i].param_count;
         out->functions[i].flags = 0u;
     }
+    out->input_count = qir->input_count;
+    out->input_abi_version = qir->input_abi_version;
+    for (uint16_t i = 0u; i < qir->input_count; ++i) {
+        memcpy(out->inputs[i].input_name_sha256,
+               qir->inputs[i].input_name_sha256, 32);
+        out->inputs[i].main_scalar_slot = qir->inputs[i].main_scalar_slot;
+        out->inputs[i].type = qir->inputs[i].type;
+        out->inputs[i].flags = qir->inputs[i].flags;
+    }
     out->initial_basis = qir->initial_basis;
     out->default_shots = qir->default_shots;
     out->default_seed = qir->default_seed;
@@ -1953,7 +2124,9 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
             has_control_flow = true;
         }
     }
-    if (qir->function_count > 0u) {
+    if (qir->input_count > 0u) {
+        fprintf(stream, "QBIT_NOVA_TYPED_QIR_V07_STEP7\n");
+    } else if (qir->function_count > 0u) {
         fprintf(stream, "QBIT_NOVA_TYPED_QIR_V06_STEP6\n");
     } else if (has_bounded_repeat) {
         fprintf(stream, "QBIT_NOVA_TYPED_QIR_V05_STEP5\n");
@@ -1987,6 +2160,17 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
         sizeof(capability_text)
     );
     fprintf(stream, "capabilities=%s\n", capability_text);
+    if (qir->input_count > 0u) {
+        fprintf(stream, "runtime_input_abi=%u\n", qir->input_abi_version);
+        fprintf(stream, "runtime_inputs=%u\n", qir->input_count);
+        for (uint16_t i = 0u; i < qir->input_count; ++i) {
+            char input_hex[65];
+            qn_hex32(qir->inputs[i].input_name_sha256, input_hex);
+            fprintf(stream,
+                    "INPUT %u slot=%u type=u32 name_sha256=%s\n",
+                    i, qir->inputs[i].main_scalar_slot, input_hex);
+        }
+    }
     if (qir->function_count > 0u) {
         fprintf(stream, "functions=%u\n", qir->function_count);
         fprintf(stream, "main_entry=%u\n", qir->main_entry_instruction);

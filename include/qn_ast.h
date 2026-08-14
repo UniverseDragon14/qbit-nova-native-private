@@ -105,8 +105,17 @@ typedef struct {
 } QNFunctionDecl;
 
 typedef struct {
+    char name[QN_NAME_CAP];
+    uint8_t name_sha256[32];
+    int line;
+    int column;
+} QNInputDecl;
+
+typedef struct {
     QNFunctionDecl functions[QN_MAX_FUNCTIONS];
     size_t function_count;
+    QNInputDecl inputs[QN_MAX_RUNTIME_INPUTS];
+    size_t input_count;
     QNStmt *items;
     size_t count;
     size_t capacity;

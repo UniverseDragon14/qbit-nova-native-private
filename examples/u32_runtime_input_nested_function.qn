@@ -1,0 +1,11 @@
+fn add(a: u32, b: u32) -> u32 {
+    value = a + b
+    return value
+}
+fn twice(n: u32) -> u32 {
+    call add(n, n) -> doubled
+    return doubled
+}
+input value: u32
+call twice(value) -> result
+emit result

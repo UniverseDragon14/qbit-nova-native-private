@@ -308,6 +308,7 @@ static void qn_finish_u32_scalar_result(const QNBytecode *bc,
 
 static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
                                            const QNGpuQvmRoute *route,
+                                           const QNRuntimeInputs *runtime_inputs,
                                            QNRunResult *out,
                                            QNDiagnostic *diag) {
     uint64_t execution_bound = 0u;
@@ -322,6 +323,36 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
     memset(frames, 0, sizeof(frames));
     frames[0].scalar_count = bc->scalar_count;
     frames[0].function_index = UINT16_MAX;
+
+    if (qn_qbc_has_runtime_inputs(bc)) {
+        if (!runtime_inputs || !runtime_inputs->provided ||
+            runtime_inputs->count != bc->input_count) {
+            qn_diag_set_code(diag, "QN-E7615", 0, 0,
+                             "complete runtime input bindings are required");
+            return QN_ERR_PARSE;
+        }
+        for (uint16_t i = 0u; i < bc->input_count; ++i) {
+            uint16_t slot = bc->inputs[i].main_scalar_slot;
+            if (slot >= frames[0].scalar_count ||
+                frames[0].initialized[slot]) {
+                qn_diag_set_code(diag, "QN-E7616", 0, 0,
+                                 "invalid runtime input scalar slot");
+                return QN_ERR_QBC;
+            }
+            frames[0].values[slot] = runtime_inputs->values[i];
+            frames[0].initialized[slot] = true;
+        }
+        out->runtime_inputs_provided = true;
+        out->runtime_input_abi = QN_RUNTIME_INPUT_ABI_V1;
+        out->runtime_input_count = runtime_inputs->count;
+        memcpy(out->runtime_input_digest,
+               runtime_inputs->input_sha256,
+               sizeof(out->runtime_input_digest));
+    } else if (runtime_inputs && runtime_inputs->provided) {
+        qn_diag_set_code(diag, "QN-E7617", 0, 0,
+                         "runtime inputs are not accepted by this QBC program");
+        return QN_ERR_PARSE;
+    }
 
     uint8_t depth = 0u;
     size_t pc = bc->main_entry_pc;
@@ -510,6 +541,7 @@ static QNStatus qn_vm_run_typed_scalar(
     uint32_t shots,
     uint64_t seed,
     const QNGpuQvmRoute *route,
+    const QNRuntimeInputs *runtime_inputs,
     QNRunResult *out,
     QNDiagnostic *diag
 ) {
@@ -528,8 +560,15 @@ static QNStatus qn_vm_run_typed_scalar(
                          "invalid typed scalar bytecode contract");
         return QN_ERR_QBC;
     }
-    if (qn_qbc_has_functions(bc)) {
-        return qn_vm_run_function_scalar(bc, route, out, diag);
+    if (qn_qbc_has_runtime_inputs(bc) || qn_qbc_has_functions(bc)) {
+        return qn_vm_run_function_scalar(
+            bc, route, runtime_inputs, out, diag
+        );
+    }
+    if (runtime_inputs && runtime_inputs->provided) {
+        qn_diag_set_code(diag, "QN-E7617", 0, 0,
+                         "runtime inputs are not accepted by this QBC program");
+        return QN_ERR_PARSE;
     }
 
     uint32_t values[QN_MAX_SCALARS] = {0};
@@ -802,13 +841,14 @@ static QNStatus qn_vm_run_typed_scalar(
     return QN_OK;
 }
 
-QNStatus qn_vm_run_guarded(const QNBytecode *bc,
-                           uint32_t shots,
-                           uint64_t seed,
-                           const QNGuardPolicy *policy,
-                           const QNGpuQvmRoute *route,
-                           QNRunResult *out,
-                           QNDiagnostic *diag) {
+QNStatus qn_vm_run_guarded_with_inputs(const QNBytecode *bc,
+                                       uint32_t shots,
+                                       uint64_t seed,
+                                       const QNGuardPolicy *policy,
+                                       const QNGpuQvmRoute *route,
+                                       const QNRuntimeInputs *runtime_inputs,
+                                       QNRunResult *out,
+                                       QNDiagnostic *diag) {
     if (!bc || !policy || !route || !out) {
         qn_diag_set_code(
             diag,
@@ -848,7 +888,7 @@ QNStatus qn_vm_run_guarded(const QNBytecode *bc,
 
     if (qn_qbc_is_typed_scalar_program(bc)) {
         status = qn_vm_run_typed_scalar(
-            bc, shots, seed, route, out, diag
+            bc, shots, seed, route, runtime_inputs, out, diag
         );
         if (status != QN_OK) qn_run_result_free(out);
         return status;
@@ -1104,6 +1144,18 @@ static unsigned qn_scalar_bool_count(const QNBytecode *bc) {
     return count;
 }
 
+QNStatus qn_vm_run_guarded(const QNBytecode *bc,
+                           uint32_t shots,
+                           uint64_t seed,
+                           const QNGuardPolicy *policy,
+                           const QNGpuQvmRoute *route,
+                           QNRunResult *out,
+                           QNDiagnostic *diag) {
+    return qn_vm_run_guarded_with_inputs(
+        bc, shots, seed, policy, route, NULL, out, diag
+    );
+}
+
 void qn_print_result(const QNBytecode *bc,
                      const QNRunResult *result,
                      FILE *stream) {
@@ -1124,6 +1176,44 @@ void qn_print_result(const QNBytecode *bc,
         unsigned bool_count = qn_scalar_bool_count(bc);
         unsigned u32_count = (unsigned)bc->scalar_count - bool_count;
         qn_hex32(result->scalar_output_digest, output_hex);
+        if (qn_qbc_has_runtime_inputs(bc)) {
+            char input_hex[65];
+            uint64_t step_bound = 0u;
+            qn_hex32(result->runtime_input_digest, input_hex);
+            (void)qn_qbc_execution_step_bound(bc, &step_bound);
+            fprintf(stream, "QBIT_NOVA_NATIVE_RUNTIME_INPUT_RUN_V07_STEP7\n");
+            fprintf(stream, "boundary=native_typed_u32_runtime_inputs\n");
+            fprintf(stream, "physical_qpu=false\n");
+            fprintf(stream, "qubits=0\n");
+            fprintf(stream, "function_count=%u\n", bc->function_count);
+            fprintf(stream, "main_scalar_slots=%u\n", bc->scalar_count);
+            fprintf(stream, "source_sha256=%s\n", source_hex);
+            fprintf(stream, "qbc_sha256=%s\n", qbc_hex);
+            fprintf(stream, "capabilities=%s\n", capability_text);
+            fprintf(stream, "guard=allowed\n");
+            qn_print_approval_lines(result, stream);
+            qn_print_route_lines(result, stream);
+            fprintf(stream, "scalar_contract=typed-u32-runtime-inputs-v1\n");
+            fprintf(stream, "qbc_version=9\n");
+            fprintf(stream, "runtime_input_abi=%u\n", result->runtime_input_abi);
+            fprintf(stream, "runtime_input_count=%u\n", result->runtime_input_count);
+            fprintf(stream, "runtime_input_digest=%s\n", input_hex);
+            fprintf(stream, "runtime_input_values_redacted=true\n");
+            if (bc->function_count > 0u) {
+                fprintf(stream, "function_table_record_size=12\n");
+                fprintf(stream, "call_opcode=0x66\n");
+                fprintf(stream, "return_opcode=0x67\n");
+                fprintf(stream, "parameter_passing=by-value\n");
+            }
+            fprintf(stream, "execution_step_bound=%llu\n",
+                    (unsigned long long)step_bound);
+            fprintf(stream, "execution_step_limit=%u\n", QN_MAX_EXECUTION_STEPS);
+            fprintf(stream, "implicit_type_conversion=false\n");
+            fprintf(stream, "emitted_scalar_id=%u\n", result->scalar_output_id);
+            fprintf(stream, "emitted_u32=%u\n", result->scalar_output_value);
+            fprintf(stream, "output_sha256=%s\n", output_hex);
+            return;
+        }
         if (qn_qbc_has_functions(bc)) {
             uint64_t step_bound = 0u;
             (void)qn_qbc_execution_step_bound(bc, &step_bound);
@@ -1485,6 +1575,76 @@ static void qn_write_route_json(FILE *stream,
     );
 }
 
+static QNStatus qn_write_runtime_input_receipt(
+    FILE *stream,
+    const QNBytecode *bc,
+    const QNRunResult *result
+) {
+    char qbc_hex[65];
+    char source_hex[65];
+    char output_hex[65];
+    char input_hex[65];
+    char capability_text[256];
+    uint64_t step_bound = 0u;
+
+    qn_hex32(result->qbc_digest, qbc_hex);
+    qn_hex32(bc->source_digest, source_hex);
+    qn_hex32(result->scalar_output_digest, output_hex);
+    qn_hex32(result->runtime_input_digest, input_hex);
+    qn_capability_format(bc->capability_mask,
+                         capability_text,
+                         sizeof(capability_text));
+    (void)qn_qbc_execution_step_bound(bc, &step_bound);
+
+    fprintf(stream, "{\n");
+    fprintf(stream, "  \"marker\": \"QBIT_NOVA_NATIVE_RUNTIME_INPUT_RECEIPT_V07_STEP7\",\n");
+    fprintf(stream, "  \"creator\": \"Universal Dragon Aslam\",\n");
+    fprintf(stream, "  \"boundary\": \"native_typed_u32_runtime_inputs\",\n");
+    fprintf(stream, "  \"physical_qpu\": false,\n");
+    fprintf(stream, "  \"guard\": \"allowed\",\n");
+    fprintf(stream, "  \"capabilities\": \"%s\",\n", capability_text);
+    qn_write_approval_json(stream, result);
+    qn_write_route_json(stream, result);
+    fprintf(stream, "  \"scalar_contract\": \"typed-u32-runtime-inputs-v1\",\n");
+    fprintf(stream, "  \"qbc_version\": 9,\n");
+    fprintf(stream, "  \"runtime_input_abi\": %u,\n",
+            result->runtime_input_abi);
+    fprintf(stream, "  \"runtime_input_count\": %u,\n",
+            result->runtime_input_count);
+    fprintf(stream, "  \"runtime_input_digest\": \"%s\",\n", input_hex);
+    fprintf(stream, "  \"runtime_input_values_redacted\": true,\n");
+    fprintf(stream, "  \"function_count\": %u,\n", bc->function_count);
+    if (bc->function_count > 0u) {
+        fprintf(stream, "  \"function_table_record_size\": 12,\n");
+        fprintf(stream, "  \"main_entry_pc\": %u,\n", bc->main_entry_pc);
+        fprintf(stream, "  \"call_opcode\": \"0x66\",\n");
+        fprintf(stream, "  \"return_opcode\": \"0x67\",\n");
+        fprintf(stream, "  \"max_functions\": %u,\n", QN_MAX_FUNCTIONS);
+        fprintf(stream, "  \"max_function_params\": %u,\n",
+                QN_MAX_FUNCTION_PARAMS);
+        fprintf(stream, "  \"max_call_depth\": %u,\n", QN_MAX_CALL_DEPTH);
+        fprintf(stream, "  \"recursion\": false,\n");
+        fprintf(stream, "  \"parameter_passing\": \"by-value\",\n");
+    }
+    fprintf(stream, "  \"execution_step_bound\": %llu,\n",
+            (unsigned long long)step_bound);
+    fprintf(stream, "  \"execution_step_limit\": %u,\n",
+            QN_MAX_EXECUTION_STEPS);
+    fprintf(stream, "  \"implicit_type_conversion\": false,\n");
+    fprintf(stream, "  \"scalar_slots\": %u,\n", bc->scalar_count);
+    fprintf(stream, "  \"emitted_scalar_id\": %u,\n",
+            result->scalar_output_id);
+    fprintf(stream, "  \"output_type\": \"u32\",\n");
+    fprintf(stream, "  \"emitted_u32\": %u,\n",
+            result->scalar_output_value);
+    fprintf(stream, "  \"output_sha256\": \"%s\",\n", output_hex);
+    fprintf(stream, "  \"qubits\": 0,\n");
+    fprintf(stream, "  \"source_sha256\": \"%s\",\n", source_hex);
+    fprintf(stream, "  \"qbc_sha256\": \"%s\"\n", qbc_hex);
+    fprintf(stream, "}\n");
+    return QN_OK;
+}
+
 static QNStatus qn_write_typed_scalar_receipt(
     FILE *stream,
     const QNBytecode *bc,
@@ -1757,6 +1917,9 @@ QNStatus qn_write_receipt(const char *path,
     }
 
     if (result->native_scalar_result &&
+        qn_qbc_has_runtime_inputs(bc)) {
+        qn_write_runtime_input_receipt(stream, bc, result);
+    } else if (result->native_scalar_result &&
         (bc->scalar_bool_mask != 0u || qn_qbc_has_bounded_repeat(bc) ||
          qn_qbc_has_functions(bc))) {
         qn_write_typed_scalar_receipt(stream, bc, result);

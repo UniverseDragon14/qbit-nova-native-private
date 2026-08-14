@@ -61,6 +61,18 @@ typedef struct {
     uint8_t flags;
 } QNFunctionRecord;
 
+enum {
+    QN_RUNTIME_INPUT_ABI_V1 = 1u,
+    QN_RUNTIME_INPUT_TYPE_U32 = 1u
+};
+
+typedef struct {
+    uint8_t input_name_sha256[32];
+    uint16_t main_scalar_slot;
+    uint8_t type;
+    uint8_t flags;
+} QNInputRecord;
+
 typedef struct {
     uint16_t total_qubits;
     uint16_t register_count;
@@ -69,6 +81,9 @@ typedef struct {
     uint16_t function_count;
     uint32_t main_entry_pc;
     QNFunctionRecord functions[QN_MAX_FUNCTIONS];
+    uint16_t input_count;
+    uint16_t input_abi_version;
+    QNInputRecord inputs[QN_MAX_RUNTIME_INPUTS];
     uint64_t initial_basis;
     uint32_t default_shots;
     uint64_t default_seed;
@@ -92,6 +107,7 @@ bool qn_qbc_is_typed_scalar_program(const QNBytecode *bc);
 bool qn_qbc_has_control_flow(const QNBytecode *bc);
 bool qn_qbc_has_bounded_repeat(const QNBytecode *bc);
 bool qn_qbc_has_functions(const QNBytecode *bc);
+bool qn_qbc_has_runtime_inputs(const QNBytecode *bc);
 bool qn_qbc_execution_step_bound(const QNBytecode *bc, uint64_t *steps_out);
 
 #endif

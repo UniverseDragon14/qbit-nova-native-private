@@ -1,0 +1,7 @@
+fn f(a: u32) -> u32 {
+    input x: u32
+    return a
+}
+input y: u32
+call f(y) -> out
+emit out
