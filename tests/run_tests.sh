@@ -2014,9 +2014,8 @@ echo "NATIVE_FUNCTION_GPU_FAIL_CLOSED=PASS"
 for SPEC in \
   'bad_function_after_return 4 QN-E7578' \
   'bad_function_bool_argument 5 QN-E7590' \
-  'bad_function_bool_return 4 QN-E7576' \
+  'bad_function_bool_return 5 QN-E7586' \
   'bad_function_call_depth9 5 QN-E7588' \
-  'bad_function_comparison_inside 4 QN-E7576' \
   'bad_function_definition_after_main 4 QN-E7581' \
   'bad_function_direct_recursion 5 QN-E7587' \
   'bad_function_duplicate_destination 5 QN-E7501' \
@@ -2024,13 +2023,10 @@ for SPEC in \
   'bad_function_duplicate_param 4 QN-E7580' \
   'bad_function_emit_inside 4 QN-E7574' \
   'bad_function_execution_budget 8 QN-E7593' \
-  'bad_function_if_inside 4 QN-E7575' \
   'bad_function_indirect_recursion 5 QN-E7587' \
-  'bad_function_missing_return 4 QN-E7579' \
+  'bad_function_missing_return 5 QN-E7579' \
   'bad_function_nested_definition 4 QN-E7573' \
   'bad_function_no_main_call 5 QN-E7591' \
-  'bad_function_repeat_inside 4 QN-E7575' \
-  'bad_function_set_inside 4 QN-E7575' \
   'bad_function_three_params 4 QN-E7572' \
   'bad_function_unknown_argument 5 QN-E7585' \
   'bad_function_unknown_call 5 QN-E7583' \

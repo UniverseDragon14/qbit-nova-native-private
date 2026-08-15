@@ -130,6 +130,96 @@ static bool function_set_initialized(uint64_t *init, uint8_t slot) {
     return true;
 }
 
+static bool function_slot_is_bool(uint64_t bool_mask, uint8_t slot) {
+    return slot < 64u && (bool_mask & (UINT64_C(1) << slot)) != 0u;
+}
+
+static bool function_branch_validate(const QNBytecode *bc,
+                                     const QNFunctionRecord *fn,
+                                     uint32_t start_pc,
+                                     uint32_t end_pc,
+                                     uint64_t init,
+                                     uint64_t bool_mask,
+                                     bool *returns_out) {
+    bool returned = false;
+    for (uint32_t pc = start_pc; pc < end_pc; ++pc) {
+        const QNInstruction *ins = &bc->instructions[pc];
+        if (returned) return false;
+
+        if (repeat_set_opcode(ins->opcode)) {
+            if (ins->a >= fn->scalar_count ||
+                ins->b >= fn->scalar_count ||
+                ins->flags >= fn->scalar_count || ins->imm != 0u ||
+                !function_slot_initialized(init, ins->a) ||
+                !function_slot_initialized(init, ins->b) ||
+                !function_slot_initialized(init, ins->flags) ||
+                function_slot_is_bool(bool_mask, ins->a) ||
+                function_slot_is_bool(bool_mask, ins->b) ||
+                function_slot_is_bool(bool_mask, ins->flags)) {
+                return false;
+            }
+            continue;
+        }
+
+        if (ins->opcode == OP_RETURN) {
+            if (ins->a >= fn->scalar_count ||
+                !function_slot_initialized(init, ins->a) ||
+                function_slot_is_bool(bool_mask, ins->a) ||
+                ins->b != 0u || ins->flags != 0u || ins->imm != 0u) {
+                return false;
+            }
+            returned = true;
+            continue;
+        }
+
+        return false;
+    }
+    if (returns_out) *returns_out = returned;
+    return true;
+}
+
+static bool function_repeat_validate(const QNBytecode *bc,
+                                     const QNFunctionRecord *fn,
+                                     uint32_t enter_pc,
+                                     uint64_t init,
+                                     uint64_t bool_mask,
+                                     uint32_t *exit_pc_out) {
+    const QNInstruction *enter = &bc->instructions[enter_pc];
+    uint32_t count = (uint32_t)enter->a | ((uint32_t)enter->b << 8);
+    if (count == 0u || count > QN_MAX_REPEAT_ITERATIONS ||
+        enter->flags != 0u || enter->imm <= enter_pc + 2u ||
+        enter->imm >= fn->end_pc) {
+        return false;
+    }
+
+    uint32_t next_pc = enter->imm - 1u;
+    const QNInstruction *next = &bc->instructions[next_pc];
+    if (next->opcode != OP_REPEAT_NEXT ||
+        next->a != 0u || next->b != 0u || next->flags != 0u ||
+        next->imm != enter_pc || next_pc <= enter_pc + 1u) {
+        return false;
+    }
+
+    for (uint32_t pc = enter_pc + 1u; pc < next_pc; ++pc) {
+        const QNInstruction *ins = &bc->instructions[pc];
+        if (!repeat_set_opcode(ins->opcode) ||
+            ins->a >= fn->scalar_count ||
+            ins->b >= fn->scalar_count ||
+            ins->flags >= fn->scalar_count || ins->imm != 0u ||
+            !function_slot_initialized(init, ins->a) ||
+            !function_slot_initialized(init, ins->b) ||
+            !function_slot_initialized(init, ins->flags) ||
+            function_slot_is_bool(bool_mask, ins->a) ||
+            function_slot_is_bool(bool_mask, ins->b) ||
+            function_slot_is_bool(bool_mask, ins->flags)) {
+            return false;
+        }
+    }
+
+    if (exit_pc_out) *exit_pc_out = enter->imm;
+    return true;
+}
+
 static bool function_range_validate(const QNBytecode *bc,
                                     uint16_t function_index,
                                     bool graph[QN_MAX_FUNCTIONS][QN_MAX_FUNCTIONS]) {
@@ -144,31 +234,72 @@ static bool function_range_validate(const QNBytecode *bc,
     uint64_t init = fn->param_count == 0u
         ? 0u
         : ((UINT64_C(1) << fn->param_count) - UINT64_C(1));
+    uint64_t bool_mask = 0u;
 
-    for (uint32_t pc = fn->entry_pc; pc < fn->end_pc; ++pc) {
+    uint32_t pc = fn->entry_pc;
+    while (pc < fn->end_pc) {
         const QNInstruction *ins = &bc->instructions[pc];
-        bool last = pc + 1u == fn->end_pc;
         switch (ins->opcode) {
             case OP_U32_CONST:
-                if (last || ins->a >= fn->scalar_count ||
+                if (ins->a >= fn->scalar_count ||
                     ins->b != 0u || ins->flags != 0u ||
                     !function_set_initialized(&init, ins->a)) return false;
+                bool_mask &= ~(UINT64_C(1) << ins->a);
+                ++pc;
                 break;
 
             case OP_U32_ADD:
             case OP_U32_SUB:
             case OP_U32_MUL:
             case OP_U32_DIV:
-                if (last || ins->a >= fn->scalar_count ||
-                    ins->b >= fn->scalar_count || ins->flags >= fn->scalar_count ||
-                    ins->imm != 0u ||
+                if (ins->a >= fn->scalar_count ||
+                    ins->b >= fn->scalar_count ||
+                    ins->flags >= fn->scalar_count || ins->imm != 0u ||
                     !function_slot_initialized(init, ins->b) ||
                     !function_slot_initialized(init, ins->flags) ||
+                    function_slot_is_bool(bool_mask, ins->b) ||
+                    function_slot_is_bool(bool_mask, ins->flags) ||
                     !function_set_initialized(&init, ins->a)) return false;
+                bool_mask &= ~(UINT64_C(1) << ins->a);
+                ++pc;
+                break;
+
+            case OP_U32_EQ:
+            case OP_U32_NE:
+            case OP_U32_LT:
+            case OP_U32_LE:
+            case OP_U32_GT:
+            case OP_U32_GE:
+                if (ins->a >= fn->scalar_count ||
+                    ins->b >= fn->scalar_count ||
+                    ins->flags >= fn->scalar_count || ins->imm != 0u ||
+                    !function_slot_initialized(init, ins->b) ||
+                    !function_slot_initialized(init, ins->flags) ||
+                    function_slot_is_bool(bool_mask, ins->b) ||
+                    function_slot_is_bool(bool_mask, ins->flags) ||
+                    !function_set_initialized(&init, ins->a)) return false;
+                bool_mask |= UINT64_C(1) << ins->a;
+                ++pc;
+                break;
+
+            case OP_U32_SET_ADD:
+            case OP_U32_SET_SUB:
+            case OP_U32_SET_MUL:
+            case OP_U32_SET_DIV:
+                if (ins->a >= fn->scalar_count ||
+                    ins->b >= fn->scalar_count ||
+                    ins->flags >= fn->scalar_count || ins->imm != 0u ||
+                    !function_slot_initialized(init, ins->a) ||
+                    !function_slot_initialized(init, ins->b) ||
+                    !function_slot_initialized(init, ins->flags) ||
+                    function_slot_is_bool(bool_mask, ins->a) ||
+                    function_slot_is_bool(bool_mask, ins->b) ||
+                    function_slot_is_bool(bool_mask, ins->flags)) return false;
+                ++pc;
                 break;
 
             case OP_CALL: {
-                if (last || ins->imm >= bc->function_count ||
+                if (ins->imm >= bc->function_count ||
                     ins->a >= fn->scalar_count ||
                     !function_set_initialized(&init, ins->a)) return false;
                 const QNFunctionRecord *callee = &bc->functions[ins->imm];
@@ -176,31 +307,103 @@ static bool function_range_validate(const QNBytecode *bc,
                     if (ins->b != 0u || ins->flags != 0u) return false;
                 } else if (callee->param_count == 1u) {
                     if (ins->b >= fn->scalar_count || ins->flags != 0u ||
-                        !function_slot_initialized(init, ins->b)) return false;
-                } else if (callee->param_count == 2u) {
-                    if (ins->b >= fn->scalar_count || ins->flags >= fn->scalar_count ||
                         !function_slot_initialized(init, ins->b) ||
-                        !function_slot_initialized(init, ins->flags)) return false;
+                        function_slot_is_bool(bool_mask, ins->b)) return false;
+                } else if (callee->param_count == 2u) {
+                    if (ins->b >= fn->scalar_count ||
+                        ins->flags >= fn->scalar_count ||
+                        !function_slot_initialized(init, ins->b) ||
+                        !function_slot_initialized(init, ins->flags) ||
+                        function_slot_is_bool(bool_mask, ins->b) ||
+                        function_slot_is_bool(bool_mask, ins->flags)) return false;
                 } else {
                     return false;
                 }
+                bool_mask &= ~(UINT64_C(1) << ins->a);
                 graph[function_index][ins->imm] = true;
+                ++pc;
+                break;
+            }
+
+            case OP_REPEAT_ENTER: {
+                uint32_t exit_pc = 0u;
+                if (!function_repeat_validate(bc, fn, pc, init, bool_mask,
+                                              &exit_pc)) return false;
+                pc = exit_pc;
+                break;
+            }
+
+            case OP_JUMP_IF_FALSE: {
+                if (ins->a >= fn->scalar_count ||
+                    !function_slot_initialized(init, ins->a) ||
+                    !function_slot_is_bool(bool_mask, ins->a) ||
+                    ins->b != 0u || ins->flags != 0u ||
+                    ins->imm <= pc + 1u || ins->imm >= fn->end_pc) {
+                    return false;
+                }
+
+                uint32_t else_pc = ins->imm;
+                uint32_t jump_pc = else_pc - 1u;
+                if (jump_pc <= pc) return false;
+                const QNInstruction *jump = &bc->instructions[jump_pc];
+                if (jump->opcode != OP_JUMP || jump->a != 0u ||
+                    jump->b != 0u || jump->flags != 0u ||
+                    jump->imm < else_pc || jump->imm >= fn->end_pc) {
+                    return false;
+                }
+
+                bool then_returns = false;
+                bool else_returns = false;
+                if (!function_branch_validate(bc, fn,
+                                              pc + 1u, jump_pc,
+                                              init, bool_mask,
+                                              &then_returns) ||
+                    !function_branch_validate(bc, fn,
+                                              else_pc, jump->imm,
+                                              init, bool_mask,
+                                              &else_returns)) {
+                    return false;
+                }
+
+                if (then_returns && else_returns) {
+                    const QNInstruction *anchor = &bc->instructions[jump->imm];
+                    if (jump->imm + 1u != fn->end_pc ||
+                        anchor->opcode != OP_RETURN ||
+                        anchor->a >= fn->scalar_count ||
+                        !function_slot_initialized(init, anchor->a) ||
+                        function_slot_is_bool(bool_mask, anchor->a) ||
+                        anchor->b != 0u || anchor->flags != 0u ||
+                        anchor->imm != 0u) {
+                        return false;
+                    }
+                    return true;
+                }
+
+                pc = jump->imm;
                 break;
             }
 
             case OP_RETURN:
-                if (!last || ins->a >= fn->scalar_count ||
+                if (ins->a >= fn->scalar_count ||
                     !function_slot_initialized(init, ins->a) ||
+                    function_slot_is_bool(bool_mask, ins->a) ||
                     ins->b != 0u || ins->flags != 0u || ins->imm != 0u) {
                     return false;
                 }
-                break;
+                return pc + 1u == fn->end_pc;
 
+            case OP_JUMP:
+            case OP_REPEAT_NEXT:
+            case OP_U32_EMIT:
+            case OP_BOOL_EMIT:
+            case OP_EMIT:
+            case OP_END:
             default:
                 return false;
         }
     }
-    return bc->instructions[fn->end_pc - 1u].opcode == OP_RETURN;
+
+    return false;
 }
 
 static bool function_depth_dfs(uint16_t node,
@@ -231,6 +434,151 @@ static bool function_depth_dfs(uint16_t node,
     return true;
 }
 
+static bool checked_cost_add(uint64_t a, uint64_t b, uint64_t *out) {
+    if (!out || a > UINT64_MAX - b) return false;
+    *out = a + b;
+    return true;
+}
+
+static bool checked_cost_mul(uint64_t a, uint64_t b, uint64_t *out) {
+    if (!out || (b != 0u && a > UINT64_MAX / b)) return false;
+    *out = a * b;
+    return true;
+}
+
+static bool function_branch_cost(const QNBytecode *bc,
+                                 uint32_t start_pc,
+                                 uint32_t end_pc,
+                                 uint64_t *cost_out,
+                                 bool *returns_out) {
+    uint64_t cost = 0u;
+    bool returned = false;
+    for (uint32_t pc = start_pc; pc < end_pc; ++pc) {
+        if (returned) return false;
+        const QNInstruction *ins = &bc->instructions[pc];
+        if (!repeat_set_opcode(ins->opcode) && ins->opcode != OP_RETURN) {
+            return false;
+        }
+        if (!checked_cost_add(cost, 1u, &cost)) return false;
+        if (ins->opcode == OP_RETURN) returned = true;
+    }
+    if (cost_out) *cost_out = cost;
+    if (returns_out) *returns_out = returned;
+    return true;
+}
+
+static bool function_cost_dfs(const QNBytecode *bc,
+                              uint16_t node,
+                              uint64_t memo[QN_MAX_FUNCTIONS],
+                              bool done[QN_MAX_FUNCTIONS],
+                              uint64_t *cost_out);
+
+static bool function_sequence_cost(const QNBytecode *bc,
+                                   uint16_t node,
+                                   uint32_t pc,
+                                   uint32_t end_pc,
+                                   uint64_t memo[QN_MAX_FUNCTIONS],
+                                   bool done[QN_MAX_FUNCTIONS],
+                                   uint64_t *cost_out) {
+    if (pc >= end_pc) return false;
+    const QNInstruction *ins = &bc->instructions[pc];
+
+    if (ins->opcode == OP_RETURN) {
+        *cost_out = 1u;
+        return true;
+    }
+
+    if (ins->opcode == OP_REPEAT_ENTER) {
+        uint32_t count = (uint32_t)ins->a | ((uint32_t)ins->b << 8);
+        if (count == 0u || count > QN_MAX_REPEAT_ITERATIONS ||
+            ins->imm <= pc + 2u || ins->imm >= end_pc) return false;
+        uint32_t next_pc = ins->imm - 1u;
+        if (bc->instructions[next_pc].opcode != OP_REPEAT_NEXT ||
+            bc->instructions[next_pc].imm != pc) return false;
+
+        uint64_t body = (uint64_t)(next_pc - pc - 1u);
+        uint64_t per_iteration = 0u;
+        uint64_t loop_cost = 0u;
+        uint64_t rest_cost = 0u;
+        if (!checked_cost_add(body, 2u, &per_iteration) ||
+            !checked_cost_mul(per_iteration, count, &loop_cost) ||
+            !function_sequence_cost(bc, node, ins->imm, end_pc,
+                                    memo, done, &rest_cost) ||
+            !checked_cost_add(loop_cost, rest_cost, cost_out)) {
+            return false;
+        }
+        return *cost_out <= QN_MAX_EXECUTION_STEPS;
+    }
+
+    if (ins->opcode == OP_JUMP_IF_FALSE) {
+        uint32_t else_pc = ins->imm;
+        if (else_pc <= pc + 1u || else_pc >= end_pc) return false;
+        uint32_t jump_pc = else_pc - 1u;
+        const QNInstruction *jump = &bc->instructions[jump_pc];
+        if (jump->opcode != OP_JUMP ||
+            jump->imm < else_pc || jump->imm >= end_pc) return false;
+
+        uint64_t then_cost = 0u;
+        uint64_t else_cost = 0u;
+        bool then_returns = false;
+        bool else_returns = false;
+        if (!function_branch_cost(bc, pc + 1u, jump_pc,
+                                  &then_cost, &then_returns) ||
+            !function_branch_cost(bc, else_pc, jump->imm,
+                                  &else_cost, &else_returns)) return false;
+
+        uint64_t rest_cost = 0u;
+        if (!(then_returns && else_returns) &&
+            !function_sequence_cost(bc, node, jump->imm, end_pc,
+                                    memo, done, &rest_cost)) {
+            return false;
+        }
+
+        uint64_t then_path = then_cost;
+        uint64_t else_path = else_cost;
+        if (!then_returns) {
+            /* True branch executes the paired forward JUMP before rejoin. */
+            if (!checked_cost_add(then_path, 1u, &then_path) ||
+                !checked_cost_add(then_path, rest_cost, &then_path)) {
+                return false;
+            }
+        }
+        if (!else_returns &&
+            !checked_cost_add(else_path, rest_cost, &else_path)) {
+            return false;
+        }
+
+        uint64_t branch_max = then_path > else_path ? then_path : else_path;
+        if (!checked_cost_add(1u, branch_max, cost_out)) return false;
+        return *cost_out <= QN_MAX_EXECUTION_STEPS;
+    }
+
+    if (ins->opcode == OP_JUMP || ins->opcode == OP_REPEAT_NEXT ||
+        ins->opcode == OP_END || ins->opcode == OP_EMIT ||
+        ins->opcode == OP_U32_EMIT || ins->opcode == OP_BOOL_EMIT) {
+        return false;
+    }
+
+    uint64_t here = 1u;
+    if (ins->opcode == OP_CALL) {
+        if (ins->imm >= bc->function_count) return false;
+        uint64_t child = 0u;
+        if (!function_cost_dfs(bc, (uint16_t)ins->imm,
+                               memo, done, &child) ||
+            !checked_cost_add(here, child, &here)) {
+            return false;
+        }
+    }
+
+    uint64_t rest = 0u;
+    if (!function_sequence_cost(bc, node, pc + 1u, end_pc,
+                                memo, done, &rest) ||
+        !checked_cost_add(here, rest, cost_out)) {
+        return false;
+    }
+    return *cost_out <= QN_MAX_EXECUTION_STEPS;
+}
+
 static bool function_cost_dfs(const QNBytecode *bc,
                               uint16_t node,
                               uint64_t memo[QN_MAX_FUNCTIONS],
@@ -241,20 +589,15 @@ static bool function_cost_dfs(const QNBytecode *bc,
         return true;
     }
     const QNFunctionRecord *fn = &bc->functions[node];
-    uint64_t cost = (uint64_t)(fn->end_pc - fn->entry_pc);
-    for (uint32_t pc = fn->entry_pc; pc < fn->end_pc; ++pc) {
-        const QNInstruction *ins = &bc->instructions[pc];
-        if (ins->opcode != OP_CALL) continue;
-        uint64_t child = 0u;
-        if (ins->imm >= bc->function_count ||
-            !function_cost_dfs(bc, (uint16_t)ins->imm, memo, done, &child) ||
-            cost > UINT64_MAX - child) return false;
-        cost += child;
+    uint64_t cost = 0u;
+    if (!function_sequence_cost(bc, node, fn->entry_pc, fn->end_pc,
+                                memo, done, &cost)) {
+        return false;
     }
     done[node] = true;
     memo[node] = cost;
     *cost_out = cost;
-    return true;
+    return cost <= QN_MAX_EXECUTION_STEPS;
 }
 
 static bool qn_qbc_is_function_contract(const QNBytecode *bc,
@@ -1313,6 +1656,10 @@ QNStatus qn_qbc_decode(const uint8_t *data,
         ins->flags = data[at + 3];
         ins->imm = get32(data + at + 4);
 
+        bool in_function_region =
+            (version == 8u || version == 9u) &&
+            function_count > 0u && i < main_entry_pc;
+
         if ((ins->opcode == OP_H ||
              ins->opcode == OP_X ||
              ins->opcode == OP_Z ||
@@ -1401,16 +1748,22 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             return QN_ERR_QBC;
         }
 
-        if ((ins->opcode == OP_U32_EQ ||
-             ins->opcode == OP_U32_NE ||
-             ins->opcode == OP_U32_LT ||
-             ins->opcode == OP_U32_LE ||
-             ins->opcode == OP_U32_GT ||
-             ins->opcode == OP_U32_GE ||
-             ins->opcode == OP_BOOL_EMIT) &&
+        bool comparison_opcode =
+            ins->opcode == OP_U32_EQ || ins->opcode == OP_U32_NE ||
+            ins->opcode == OP_U32_LT || ins->opcode == OP_U32_LE ||
+            ins->opcode == OP_U32_GT || ins->opcode == OP_U32_GE;
+        if (comparison_opcode &&
+            version != 5u && version != 6u && version != 7u &&
+            !((version == 8u || version == 9u) && in_function_region)) {
+            qn_diag_set_code(diag, "QN-E7523", 0, 0,
+                             "comparison opcode is not valid for this QBC region/version");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+        if (ins->opcode == OP_BOOL_EMIT &&
             version != 5u && version != 6u && version != 7u) {
             qn_diag_set_code(diag, "QN-E7523", 0, 0,
-                             "comparison/bool opcode requires QBC version 5, 6 or 7");
+                             "bool emit requires QBC version 5, 6 or 7");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
@@ -1425,13 +1778,15 @@ QNStatus qn_qbc_decode(const uint8_t *data,
 
         if ((repeat_set_opcode(ins->opcode) ||
              ins->opcode == OP_REPEAT_ENTER ||
-             ins->opcode == OP_REPEAT_NEXT) && version != 7u) {
+             ins->opcode == OP_REPEAT_NEXT) &&
+            version != 7u &&
+            !((version == 8u || version == 9u) && in_function_region)) {
             qn_diag_set_code(diag, "QN-E7567", 0, 0,
-                             "bounded repeat opcode requires QBC version 7");
+                             "bounded repeat opcode is not valid for this QBC region/version");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
-        if (repeat_set_opcode(ins->opcode) &&
+        if (!in_function_region && repeat_set_opcode(ins->opcode) &&
             (ins->a >= scalars || ins->b >= scalars ||
              ins->flags >= scalars || ins->imm != 0u ||
              (scalar_bool_mask & (UINT64_C(1) << ins->a)) != 0u ||
@@ -1465,19 +1820,28 @@ QNStatus qn_qbc_decode(const uint8_t *data,
         }
 
         if ((ins->opcode == OP_JUMP_IF_FALSE ||
-             ins->opcode == OP_JUMP) && version != 6u) {
+             ins->opcode == OP_JUMP) && version != 6u &&
+            !((version == 8u || version == 9u) && in_function_region)) {
             qn_diag_set_code(diag, "QN-E7540", 0, 0,
-                             "control-flow opcode requires QBC version 6");
+                             "control-flow opcode is not valid for this QBC region/version");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
-        if (ins->opcode == OP_JUMP_IF_FALSE &&
+        if (ins->opcode == OP_JUMP_IF_FALSE && !in_function_region &&
             (ins->a >= scalars ||
              (scalar_bool_mask & (UINT64_C(1) << ins->a)) == 0u ||
              ins->b != 0u || ins->flags != 0u ||
              ins->imm <= i || ins->imm >= instruction_count)) {
             qn_diag_set_code(diag, "QN-E7541", 0, 0,
                              "invalid or non-forward conditional jump bytecode");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+        if (ins->opcode == OP_JUMP_IF_FALSE && in_function_region &&
+            (ins->b != 0u || ins->flags != 0u ||
+             ins->imm <= i || ins->imm >= instruction_count)) {
+            qn_diag_set_code(diag, "QN-E7541", 0, 0,
+                             "invalid function conditional jump encoding");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
@@ -1490,7 +1854,7 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             return QN_ERR_QBC;
         }
 
-        if (version != 8u && ins->opcode == OP_U32_CONST &&
+        if (!in_function_region && ins->opcode == OP_U32_CONST &&
             (ins->a >= scalars || ins->b != 0u ||
              ins->flags != 0u)) {
             qn_diag_set_code(diag, "QN-E7509", 0, 0,
@@ -1498,7 +1862,7 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
-        if (version != 8u && (ins->opcode == OP_U32_ADD ||
+        if (!in_function_region && (ins->opcode == OP_U32_ADD ||
              ins->opcode == OP_U32_SUB ||
              ins->opcode == OP_U32_MUL ||
              ins->opcode == OP_U32_DIV) &&
@@ -1509,7 +1873,8 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }
-        if ((ins->opcode == OP_U32_EQ ||
+        if (!in_function_region &&
+            (ins->opcode == OP_U32_EQ ||
              ins->opcode == OP_U32_NE ||
              ins->opcode == OP_U32_LT ||
              ins->opcode == OP_U32_LE ||
@@ -1566,9 +1931,14 @@ QNStatus qn_qbc_decode(const uint8_t *data,
     bool contains_scalar_opcode = false;
     bool contains_control_flow = false;
     bool contains_repeat = false;
+    bool contains_main_control_flow = false;
+    bool contains_main_repeat = false;
     bool contains_functions = false;
     for (size_t i = 0; i < out->instruction_count; ++i) {
         uint8_t opcode = out->instructions[i].opcode;
+        bool function_region =
+            (version == 8u || version == 9u) &&
+            out->function_count > 0u && i < out->main_entry_pc;
         if (opcode == OP_U32_VECTOR_ADD) contains_vector_opcode = true;
         if (opcode == OP_U32_CONST || opcode == OP_U32_ADD ||
             opcode == OP_U32_SUB || opcode == OP_U32_MUL ||
@@ -1582,11 +1952,15 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             opcode == OP_REPEAT_NEXT || opcode == OP_CALL ||
             opcode == OP_RETURN)
             contains_scalar_opcode = true;
-        if (opcode == OP_JUMP_IF_FALSE || opcode == OP_JUMP)
+        if (opcode == OP_JUMP_IF_FALSE || opcode == OP_JUMP) {
             contains_control_flow = true;
+            if (!function_region) contains_main_control_flow = true;
+        }
         if (repeat_set_opcode(opcode) || opcode == OP_REPEAT_ENTER ||
-            opcode == OP_REPEAT_NEXT)
+            opcode == OP_REPEAT_NEXT) {
             contains_repeat = true;
+            if (!function_region) contains_main_repeat = true;
+        }
         if (opcode == OP_CALL || opcode == OP_RETURN)
             contains_functions = true;
     }
@@ -1618,13 +1992,14 @@ QNStatus qn_qbc_decode(const uint8_t *data,
                     qn_qbc_is_typed_scalar_program(out);
         }
         else if (version == 8u) {
-            valid = contains_functions && !contains_repeat &&
-                    !contains_control_flow && out->scalar_bool_mask == 0u &&
+            valid = contains_functions &&
+                    !contains_main_repeat && !contains_main_control_flow &&
+                    out->scalar_bool_mask == 0u &&
                     out->input_count == 0u &&
                     qn_qbc_is_typed_scalar_program(out);
         } else if (version == 9u) {
             valid = out->input_count > 0u &&
-                    !contains_repeat && !contains_control_flow &&
+                    !contains_main_repeat && !contains_main_control_flow &&
                     out->scalar_bool_mask == 0u &&
                     qn_qbc_is_typed_scalar_program(out);
         }

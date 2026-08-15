@@ -558,6 +558,228 @@ static bool parse_input_after_keyword(Parser *p,
     return true;
 }
 
+static bool parse_step8_function_branch_statement(Parser *p, QNStmt *s) {
+    const QNToken *start = peek(p);
+    memset(s, 0, sizeof(*s));
+    s->line = start->line;
+    s->column = start->column;
+
+    if (match(p, TOK_SET)) return parse_set_after_keyword(p, s);
+    if (match(p, TOK_RETURN)) return parse_return_after_keyword(p, s);
+
+    if (match(p, TOK_IF)) {
+        qn_diag_set_code(p->diag, "QN-E7620", start->line, start->column,
+                         "nested if is not enabled inside Step8 function branches");
+        return false;
+    }
+    if (match(p, TOK_REPEAT)) {
+        qn_diag_set_code(p->diag, "QN-E7620", start->line, start->column,
+                         "repeat is not enabled inside Step8 function branches");
+        return false;
+    }
+    if (match(p, TOK_LET)) {
+        qn_diag_set_code(p->diag, "QN-E7620", start->line, start->column,
+                         "branch-local let is not enabled in Step8 functions");
+        return false;
+    }
+    if (match(p, TOK_CALL)) {
+        qn_diag_set_code(p->diag, "QN-E7620", start->line, start->column,
+                         "branch-local call is not enabled in Step8 functions");
+        return false;
+    }
+    if (match(p, TOK_EMIT)) {
+        qn_diag_set_code(p->diag, "QN-E7574", start->line, start->column,
+                         "emit is not allowed inside functions");
+        return false;
+    }
+
+    qn_diag_set_code(p->diag, "QN-E7620", start->line, start->column,
+                     "Step8 function branches permit only set and return");
+    return false;
+}
+
+static bool parse_step8_function_branch_block(Parser *p,
+                                               QNStmt **items_out,
+                                               size_t *count_out) {
+    QNProgram block = {0};
+    bool seen_return = false;
+    while (match(p, TOK_NEWLINE)) {}
+
+    while (!is(p, TOK_RBRACE)) {
+        if (is(p, TOK_EOF)) {
+            const QNToken *t = peek(p);
+            qn_diag_set_code(p->diag, "QN-E7533", t->line, t->column,
+                             "unterminated Step8 function branch; expected '}'");
+            qn_program_free(&block);
+            return false;
+        }
+        if (seen_return) {
+            const QNToken *t = peek(p);
+            qn_diag_set_code(p->diag, "QN-E7621", t->line, t->column,
+                             "statement after terminal return in function branch");
+            qn_program_free(&block);
+            return false;
+        }
+
+        QNStmt stmt;
+        if (!parse_step8_function_branch_statement(p, &stmt) ||
+            !consume_branch_line_end(p) ||
+            !add_stmt(&block, stmt, p->diag)) {
+            qn_stmt_free_contents(&stmt);
+            qn_program_free(&block);
+            return false;
+        }
+        if (stmt.kind == STMT_RETURN) seen_return = true;
+        while (match(p, TOK_NEWLINE)) {}
+    }
+
+    (void)match(p, TOK_RBRACE);
+    *items_out = block.items;
+    *count_out = block.count;
+    return true;
+}
+
+static bool parse_step8_function_if_after_keyword(Parser *p, QNStmt *s) {
+    s->kind = STMT_IF;
+    const QNToken *condition = expect(p, TOK_IDENT, "bool condition variable");
+    if (!condition) return false;
+    snprintf(s->as.if_stmt.condition, sizeof(s->as.if_stmt.condition),
+             "%s", condition->text);
+
+    if (!match(p, TOK_LBRACE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7533", t->line, t->column,
+                         "expected '{' to start function if block");
+        return false;
+    }
+    if (!parse_step8_function_branch_block(p,
+                                            &s->as.if_stmt.then_items,
+                                            &s->as.if_stmt.then_count)) {
+        qn_stmt_free_contents(s);
+        return false;
+    }
+
+    while (match(p, TOK_NEWLINE)) {}
+    if (!match(p, TOK_ELSE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7532", t->line, t->column,
+                         "Step8 function if requires an else block");
+        qn_stmt_free_contents(s);
+        return false;
+    }
+    if (!match(p, TOK_LBRACE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7533", t->line, t->column,
+                         "expected '{' to start function else block");
+        qn_stmt_free_contents(s);
+        return false;
+    }
+    if (!parse_step8_function_branch_block(p,
+                                            &s->as.if_stmt.else_items,
+                                            &s->as.if_stmt.else_count)) {
+        qn_stmt_free_contents(s);
+        return false;
+    }
+    return true;
+}
+
+static bool parse_step8_function_repeat_body_statement(Parser *p, QNStmt *s) {
+    const QNToken *start = peek(p);
+    memset(s, 0, sizeof(*s));
+    s->line = start->line;
+    s->column = start->column;
+
+    if (match(p, TOK_SET)) return parse_set_after_keyword(p, s);
+
+    if (match(p, TOK_RETURN)) {
+        qn_diag_set_code(p->diag, "QN-E7622", start->line, start->column,
+                         "return inside function repeat is not enabled in Step8");
+        return false;
+    }
+    if (match(p, TOK_REPEAT)) {
+        qn_diag_set_code(p->diag, "QN-E7554", start->line, start->column,
+                         "nested repeat is not enabled in Step8 functions");
+        return false;
+    }
+    if (match(p, TOK_IF)) {
+        qn_diag_set_code(p->diag, "QN-E7555", start->line, start->column,
+                         "if inside function repeat is not enabled in Step8");
+        return false;
+    }
+    if (match(p, TOK_LET) || match(p, TOK_CALL) || match(p, TOK_EMIT)) {
+        qn_diag_set_code(p->diag, "QN-E7622", start->line, start->column,
+                         "Step8 function repeat body permits only set statements");
+        return false;
+    }
+
+    qn_diag_set_code(p->diag, "QN-E7622", start->line, start->column,
+                     "Step8 function repeat body permits only set statements");
+    return false;
+}
+
+static bool parse_step8_function_repeat_block(Parser *p,
+                                               QNStmt **items_out,
+                                               size_t *count_out) {
+    QNProgram block = {0};
+    while (match(p, TOK_NEWLINE)) {}
+
+    while (!is(p, TOK_RBRACE)) {
+        if (is(p, TOK_EOF)) {
+            const QNToken *t = peek(p);
+            qn_diag_set_code(p->diag, "QN-E7552", t->line, t->column,
+                             "unterminated function repeat block; expected '}'");
+            qn_program_free(&block);
+            return false;
+        }
+        QNStmt stmt;
+        if (!parse_step8_function_repeat_body_statement(p, &stmt) ||
+            !consume_branch_line_end(p) ||
+            !add_stmt(&block, stmt, p->diag)) {
+            qn_stmt_free_contents(&stmt);
+            qn_program_free(&block);
+            return false;
+        }
+        while (match(p, TOK_NEWLINE)) {}
+    }
+
+    (void)match(p, TOK_RBRACE);
+    if (block.count == 0u) {
+        const QNToken *t = prev(p);
+        qn_diag_set_code(p->diag, "QN-E7553", t->line, t->column,
+                         "function repeat body must contain at least one set statement");
+        qn_program_free(&block);
+        return false;
+    }
+    *items_out = block.items;
+    *count_out = block.count;
+    return true;
+}
+
+static bool parse_step8_function_repeat_after_keyword(Parser *p, QNStmt *s) {
+    s->kind = STMT_REPEAT;
+    const QNToken *count = expect(p, TOK_INT, "repeat iteration literal");
+    if (!count) return false;
+    if (count->int_value == 0u || count->int_value > QN_MAX_REPEAT_ITERATIONS) {
+        qn_diag_set_code(p->diag, "QN-E7550", count->line, count->column,
+                         "repeat count must be 1..%u", QN_MAX_REPEAT_ITERATIONS);
+        return false;
+    }
+    s->as.repeat_stmt.iterations = (uint32_t)count->int_value;
+    if (!match(p, TOK_LBRACE)) {
+        const QNToken *t = peek(p);
+        qn_diag_set_code(p->diag, "QN-E7552", t->line, t->column,
+                         "expected '{' to start function repeat block");
+        return false;
+    }
+    if (!parse_step8_function_repeat_block(p,
+                                            &s->as.repeat_stmt.body_items,
+                                            &s->as.repeat_stmt.body_count)) {
+        qn_stmt_free_contents(s);
+        return false;
+    }
+    return true;
+}
+
 static bool parse_function_body_statement(Parser *p, QNStmt *s) {
     const QNToken *start = peek(p);
     memset(s, 0, sizeof(*s));
@@ -566,7 +788,7 @@ static bool parse_function_body_statement(Parser *p, QNStmt *s) {
 
     if (match(p, TOK_FN)) {
         qn_diag_set_code(p->diag, "QN-E7573", start->line, start->column,
-                         "nested function definitions are not enabled in Stage 7 Step 6");
+                         "nested function definitions are not enabled");
         return false;
     }
     if (match_contextual_input_declaration(p)) {
@@ -576,30 +798,19 @@ static bool parse_function_body_statement(Parser *p, QNStmt *s) {
     }
     if (match(p, TOK_EMIT)) {
         qn_diag_set_code(p->diag, "QN-E7574", start->line, start->column,
-                         "emit is not allowed inside Step6 functions");
+                         "emit is not allowed inside functions");
         return false;
     }
-    if (match(p, TOK_REPEAT) || match(p, TOK_IF) || match(p, TOK_SET)) {
-        qn_diag_set_code(p->diag, "QN-E7575", start->line, start->column,
-                         "Step6 functions do not enable if, repeat, or set");
-        return false;
-    }
+    if (match(p, TOK_IF)) return parse_step8_function_if_after_keyword(p, s);
+    if (match(p, TOK_REPEAT)) return parse_step8_function_repeat_after_keyword(p, s);
+    if (match(p, TOK_SET)) return parse_set_after_keyword(p, s);
     if (match(p, TOK_LET)) return parse_u32_let_after_keyword(p, s);
     if (match(p, TOK_CALL)) return parse_call_after_keyword(p, s);
     if (match(p, TOK_RETURN)) return parse_return_after_keyword(p, s);
-    if (is(p, TOK_IDENT)) {
-        if (!parse_scalar_binary(p, s)) return false;
-        if (s->kind != STMT_U32_ADD && s->kind != STMT_U32_SUB &&
-            s->kind != STMT_U32_MUL && s->kind != STMT_U32_DIV) {
-            qn_diag_set_code(p->diag, "QN-E7576", start->line, start->column,
-                             "comparisons are not enabled inside Step6 functions");
-            return false;
-        }
-        return true;
-    }
+    if (is(p, TOK_IDENT)) return parse_scalar_binary(p, s);
 
     qn_diag_set_code(p->diag, "QN-E7575", start->line, start->column,
-                     "Step6 function body permits only let, u32 arithmetic, call, and return");
+                     "unsupported statement inside Step8 function");
     return false;
 }
 
@@ -607,7 +818,7 @@ static bool parse_function_block(Parser *p,
                                  QNStmt **items_out,
                                  size_t *count_out) {
     QNProgram block = {0};
-    bool seen_return = false;
+    bool direct_return_seen = false;
     while (match(p, TOK_NEWLINE)) {}
 
     while (!is(p, TOK_RBRACE)) {
@@ -618,13 +829,14 @@ static bool parse_function_block(Parser *p,
             qn_program_free(&block);
             return false;
         }
-        if (seen_return) {
+        if (direct_return_seen) {
             const QNToken *t = peek(p);
             qn_diag_set_code(p->diag, "QN-E7578", t->line, t->column,
-                             "return must be the final function statement");
+                             "statement after terminal function return");
             qn_program_free(&block);
             return false;
         }
+
         QNStmt stmt;
         if (!parse_function_body_statement(p, &stmt) ||
             !consume_branch_line_end(p) ||
@@ -633,17 +845,11 @@ static bool parse_function_block(Parser *p,
             qn_program_free(&block);
             return false;
         }
-        if (stmt.kind == STMT_RETURN) seen_return = true;
+        if (stmt.kind == STMT_RETURN) direct_return_seen = true;
         while (match(p, TOK_NEWLINE)) {}
     }
+
     (void)match(p, TOK_RBRACE);
-    if (!seen_return) {
-        const QNToken *t = prev(p);
-        qn_diag_set_code(p->diag, "QN-E7579", t->line, t->column,
-                         "Step6 function must terminate with return");
-        qn_program_free(&block);
-        return false;
-    }
     *items_out = block.items;
     *count_out = block.count;
     return true;

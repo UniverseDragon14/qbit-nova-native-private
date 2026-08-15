@@ -181,6 +181,7 @@ test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
 	./$(NATIVE_FUNCTION_TEST)
 	bash tests/run_tests.sh
 	bash tests/test_runtime_inputs.sh
+	bash tests/test_function_control_flow.sh
 
 install: check-deps $(BIN)
 	install -m 0755 $(BIN) $(DESTDIR)/usr/local/bin/qnova

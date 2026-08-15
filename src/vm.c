@@ -276,11 +276,30 @@ static QNStatus qn_vm_run_bounded_compute(
 typedef struct {
     uint32_t values[QN_MAX_SCALARS];
     bool initialized[QN_MAX_SCALARS];
+    uint64_t bool_mask;
     uint16_t scalar_count;
     size_t return_pc;
     uint8_t return_destination;
     uint16_t function_index;
+    bool repeat_active;
+    uint32_t repeat_remaining;
+    size_t repeat_enter_pc;
 } QNFunctionFrame;
+
+static bool function_frame_is_bool(const QNFunctionFrame *frame,
+                                   uint16_t slot) {
+    return frame && slot < 64u &&
+           (frame->bool_mask & (UINT64_C(1) << slot)) != 0u;
+}
+
+static void function_frame_set_bool(QNFunctionFrame *frame,
+                                    uint16_t slot,
+                                    bool is_bool) {
+    if (!frame || slot >= 64u) return;
+    uint64_t bit = UINT64_C(1) << slot;
+    if (is_bool) frame->bool_mask |= bit;
+    else frame->bool_mask &= ~bit;
+}
 
 static void qn_finish_u32_scalar_result(const QNBytecode *bc,
                                         const QNGpuQvmRoute *route,
@@ -323,6 +342,7 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
     memset(frames, 0, sizeof(frames));
     frames[0].scalar_count = bc->scalar_count;
     frames[0].function_index = UINT16_MAX;
+    frames[0].repeat_enter_pc = SIZE_MAX;
 
     if (qn_qbc_has_runtime_inputs(bc)) {
         if (!runtime_inputs || !runtime_inputs->provided ||
@@ -341,6 +361,7 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
             }
             frames[0].values[slot] = runtime_inputs->values[i];
             frames[0].initialized[slot] = true;
+            function_frame_set_bool(&frames[0], slot, false);
         }
         out->runtime_inputs_provided = true;
         out->runtime_input_abi = QN_RUNTIME_INPUT_ABI_V1;
@@ -370,6 +391,27 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
         }
 
         QNFunctionFrame *frame = &frames[depth];
+        const QNFunctionRecord *active_fn = NULL;
+        if (depth == 0u) {
+            if (pc < bc->main_entry_pc) {
+                qn_diag_set_code(diag, "QN-E7627", 0, 0,
+                                 "main execution entered function instruction range");
+                return QN_ERR_RUNTIME;
+            }
+        } else {
+            if (frame->function_index >= bc->function_count) {
+                qn_diag_set_code(diag, "QN-E7627", 0, 0,
+                                 "invalid active function frame index");
+                return QN_ERR_RUNTIME;
+            }
+            active_fn = &bc->functions[frame->function_index];
+            if (pc < active_fn->entry_pc || pc >= active_fn->end_pc) {
+                qn_diag_set_code(diag, "QN-E7627", 0, 0,
+                                 "function execution escaped its instruction interval");
+                return QN_ERR_RUNTIME;
+            }
+        }
+
         const QNInstruction *ins = &bc->instructions[pc];
         switch (ins->opcode) {
             case OP_U32_CONST:
@@ -380,6 +422,7 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
                 }
                 frame->values[ins->a] = ins->imm;
                 frame->initialized[ins->a] = true;
+                function_frame_set_bool(frame, ins->a, false);
                 ++pc;
                 break;
 
@@ -389,9 +432,11 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
             case OP_U32_DIV:
                 if (ins->a >= frame->scalar_count || ins->b >= frame->scalar_count ||
                     ins->flags >= frame->scalar_count || frame->initialized[ins->a] ||
-                    !frame->initialized[ins->b] || !frame->initialized[ins->flags]) {
+                    !frame->initialized[ins->b] || !frame->initialized[ins->flags] ||
+                    function_frame_is_bool(frame, ins->b) ||
+                    function_frame_is_bool(frame, ins->flags)) {
                     qn_diag_set_code(diag, "QN-E7596", 0, 0,
-                                     "function arithmetic reads invalid scalar state");
+                                     "function arithmetic reads invalid typed scalar state");
                     return QN_ERR_RUNTIME;
                 }
                 if (ins->opcode == OP_U32_DIV && frame->values[ins->flags] == 0u) {
@@ -420,7 +465,186 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
                         break;
                 }
                 frame->initialized[ins->a] = true;
+                function_frame_set_bool(frame, ins->a, false);
                 ++pc;
+                break;
+
+            case OP_U32_EQ:
+            case OP_U32_NE:
+            case OP_U32_LT:
+            case OP_U32_LE:
+            case OP_U32_GT:
+            case OP_U32_GE:
+                if (depth == 0u ||
+                    ins->a >= frame->scalar_count ||
+                    ins->b >= frame->scalar_count ||
+                    ins->flags >= frame->scalar_count ||
+                    frame->initialized[ins->a] ||
+                    !frame->initialized[ins->b] ||
+                    !frame->initialized[ins->flags] ||
+                    function_frame_is_bool(frame, ins->b) ||
+                    function_frame_is_bool(frame, ins->flags)) {
+                    qn_diag_set_code(diag, "QN-E7628", 0, 0,
+                                     "invalid Step8 function comparison state");
+                    return QN_ERR_RUNTIME;
+                }
+                switch (ins->opcode) {
+                    case OP_U32_EQ:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] == frame->values[ins->flags];
+                        break;
+                    case OP_U32_NE:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] != frame->values[ins->flags];
+                        break;
+                    case OP_U32_LT:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] < frame->values[ins->flags];
+                        break;
+                    case OP_U32_LE:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] <= frame->values[ins->flags];
+                        break;
+                    case OP_U32_GT:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] > frame->values[ins->flags];
+                        break;
+                    case OP_U32_GE:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] >= frame->values[ins->flags];
+                        break;
+                    default:
+                        break;
+                }
+                frame->initialized[ins->a] = true;
+                function_frame_set_bool(frame, ins->a, true);
+                ++pc;
+                break;
+
+            case OP_U32_SET_ADD:
+            case OP_U32_SET_SUB:
+            case OP_U32_SET_MUL:
+            case OP_U32_SET_DIV:
+                if (depth == 0u ||
+                    ins->a >= frame->scalar_count ||
+                    ins->b >= frame->scalar_count ||
+                    ins->flags >= frame->scalar_count ||
+                    !frame->initialized[ins->a] ||
+                    !frame->initialized[ins->b] ||
+                    !frame->initialized[ins->flags] ||
+                    function_frame_is_bool(frame, ins->a) ||
+                    function_frame_is_bool(frame, ins->b) ||
+                    function_frame_is_bool(frame, ins->flags)) {
+                    qn_diag_set_code(diag, "QN-E7629", 0, 0,
+                                     "invalid Step8 function set state");
+                    return QN_ERR_RUNTIME;
+                }
+                if (ins->opcode == OP_U32_SET_DIV &&
+                    frame->values[ins->flags] == 0u) {
+                    qn_diag_set_code(diag, "QN-E7517", 0, 0,
+                                     "u32 scalar division by zero");
+                    return QN_ERR_RUNTIME;
+                }
+                switch (ins->opcode) {
+                    case OP_U32_SET_ADD:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] + frame->values[ins->flags];
+                        break;
+                    case OP_U32_SET_SUB:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] - frame->values[ins->flags];
+                        break;
+                    case OP_U32_SET_MUL:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] * frame->values[ins->flags];
+                        break;
+                    case OP_U32_SET_DIV:
+                        frame->values[ins->a] =
+                            frame->values[ins->b] / frame->values[ins->flags];
+                        break;
+                    default:
+                        break;
+                }
+                ++pc;
+                break;
+
+            case OP_REPEAT_ENTER: {
+                if (depth == 0u || !active_fn) {
+                    qn_diag_set_code(diag, "QN-E7630", 0, 0,
+                                     "function repeat executed outside a function frame");
+                    return QN_ERR_RUNTIME;
+                }
+                uint32_t repeat_count = (uint32_t)ins->a |
+                                        ((uint32_t)ins->b << 8);
+                if (repeat_count == 0u ||
+                    repeat_count > QN_MAX_REPEAT_ITERATIONS ||
+                    ins->flags != 0u || ins->imm <= pc + 1u ||
+                    ins->imm >= active_fn->end_pc) {
+                    qn_diag_set_code(diag, "QN-E7630", 0, 0,
+                                     "invalid function repeat enter state");
+                    return QN_ERR_RUNTIME;
+                }
+                if (!frame->repeat_active) {
+                    frame->repeat_active = true;
+                    frame->repeat_remaining = repeat_count;
+                    frame->repeat_enter_pc = pc;
+                } else if (frame->repeat_enter_pc != pc ||
+                           frame->repeat_remaining == 0u) {
+                    qn_diag_set_code(diag, "QN-E7630", 0, 0,
+                                     "invalid function repeat re-entry state");
+                    return QN_ERR_RUNTIME;
+                }
+                ++pc;
+                break;
+            }
+
+            case OP_REPEAT_NEXT:
+                if (depth == 0u || !active_fn ||
+                    !frame->repeat_active || frame->repeat_remaining == 0u ||
+                    ins->a != 0u || ins->b != 0u || ins->flags != 0u ||
+                    ins->imm != frame->repeat_enter_pc || ins->imm >= pc ||
+                    ins->imm < active_fn->entry_pc) {
+                    qn_diag_set_code(diag, "QN-E7630", 0, 0,
+                                     "invalid function repeat next state");
+                    return QN_ERR_RUNTIME;
+                }
+                if (frame->repeat_remaining > 1u) {
+                    --frame->repeat_remaining;
+                    pc = (size_t)ins->imm;
+                } else {
+                    frame->repeat_remaining = 0u;
+                    frame->repeat_active = false;
+                    frame->repeat_enter_pc = SIZE_MAX;
+                    ++pc;
+                }
+                break;
+
+            case OP_JUMP_IF_FALSE:
+                if (depth == 0u || !active_fn ||
+                    ins->a >= frame->scalar_count ||
+                    !frame->initialized[ins->a] ||
+                    !function_frame_is_bool(frame, ins->a) ||
+                    frame->values[ins->a] > 1u ||
+                    ins->b != 0u || ins->flags != 0u ||
+                    ins->imm <= pc || ins->imm >= active_fn->end_pc) {
+                    qn_diag_set_code(diag, "QN-E7631", 0, 0,
+                                     "invalid function conditional jump state");
+                    return QN_ERR_RUNTIME;
+                }
+                pc = frame->values[ins->a] == 0u
+                    ? (size_t)ins->imm
+                    : pc + 1u;
+                break;
+
+            case OP_JUMP:
+                if (depth == 0u || !active_fn ||
+                    ins->a != 0u || ins->b != 0u || ins->flags != 0u ||
+                    ins->imm <= pc || ins->imm >= active_fn->end_pc) {
+                    qn_diag_set_code(diag, "QN-E7631", 0, 0,
+                                     "invalid function forward jump target");
+                    return QN_ERR_RUNTIME;
+                }
+                pc = (size_t)ins->imm;
                 break;
 
             case OP_CALL: {
@@ -433,18 +657,21 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
                 const QNFunctionRecord *callee = &bc->functions[ins->imm];
                 uint32_t args[QN_MAX_FUNCTION_PARAMS] = {0u, 0u};
                 if (callee->param_count >= 1u) {
-                    if (ins->b >= frame->scalar_count || !frame->initialized[ins->b]) {
+                    if (ins->b >= frame->scalar_count ||
+                        !frame->initialized[ins->b] ||
+                        function_frame_is_bool(frame, ins->b)) {
                         qn_diag_set_code(diag, "QN-E7597", 0, 0,
-                                         "CALL reads uninitialized argument 0");
+                                         "CALL requires initialized u32 argument 0");
                         return QN_ERR_RUNTIME;
                     }
                     args[0] = frame->values[ins->b];
                 }
                 if (callee->param_count >= 2u) {
                     if (ins->flags >= frame->scalar_count ||
-                        !frame->initialized[ins->flags]) {
+                        !frame->initialized[ins->flags] ||
+                        function_frame_is_bool(frame, ins->flags)) {
                         qn_diag_set_code(diag, "QN-E7597", 0, 0,
-                                         "CALL reads uninitialized argument 1");
+                                         "CALL requires initialized u32 argument 1");
                         return QN_ERR_RUNTIME;
                     }
                     args[1] = frame->values[ins->flags];
@@ -457,26 +684,25 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
                 next->return_pc = pc + 1u;
                 next->return_destination = ins->a;
                 next->function_index = (uint16_t)ins->imm;
+                next->repeat_enter_pc = SIZE_MAX;
                 for (uint8_t i = 0u; i < callee->param_count; ++i) {
                     next->values[i] = args[i];
                     next->initialized[i] = true;
+                    function_frame_set_bool(next, i, false);
                 }
                 pc = callee->entry_pc;
                 break;
             }
 
             case OP_RETURN: {
-                if (depth == 0u || ins->a >= frame->scalar_count ||
+                if (depth == 0u || !active_fn ||
+                    ins->a >= frame->scalar_count ||
                     !frame->initialized[ins->a] ||
-                    frame->function_index >= bc->function_count) {
+                    function_frame_is_bool(frame, ins->a) ||
+                    ins->b != 0u || ins->flags != 0u || ins->imm != 0u ||
+                    frame->repeat_active) {
                     qn_diag_set_code(diag, "QN-E7598", 0, 0,
                                      "invalid function RETURN runtime state");
-                    return QN_ERR_RUNTIME;
-                }
-                const QNFunctionRecord *fn = &bc->functions[frame->function_index];
-                if (pc + 1u != fn->end_pc) {
-                    qn_diag_set_code(diag, "QN-E7598", 0, 0,
-                                     "RETURN is not terminal in function frame");
                     return QN_ERR_RUNTIME;
                 }
                 uint32_t value = frame->values[ins->a];
@@ -493,13 +719,15 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
                 }
                 caller->values[destination] = value;
                 caller->initialized[destination] = true;
+                function_frame_set_bool(caller, destination, false);
                 pc = return_pc;
                 break;
             }
 
             case OP_U32_EMIT:
                 if (depth != 0u || emitted || ins->a >= frame->scalar_count ||
-                    !frame->initialized[ins->a]) {
+                    !frame->initialized[ins->a] ||
+                    function_frame_is_bool(frame, ins->a)) {
                     qn_diag_set_code(diag, "QN-E7599", 0, 0,
                                      "invalid function-program emit state");
                     return QN_ERR_RUNTIME;
@@ -511,7 +739,8 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
                 break;
 
             case OP_END:
-                if (depth != 0u || pc + 1u != bc->instruction_count || !emitted) {
+                if (depth != 0u || pc + 1u != bc->instruction_count || !emitted ||
+                    frame->repeat_active) {
                     qn_diag_set_code(diag, "QN-E7599", 0, 0,
                                      "invalid function-program termination");
                     return QN_ERR_RUNTIME;
@@ -522,7 +751,7 @@ static QNStatus qn_vm_run_function_scalar(const QNBytecode *bc,
 
             default:
                 qn_diag_set_code(diag, "QN-E7596", 0, 0,
-                                 "unexpected opcode in Step6 function VM");
+                                 "unexpected opcode in Step8 function VM");
                 return QN_ERR_RUNTIME;
         }
     }

@@ -3,7 +3,7 @@ fn bad(a: u32, b: u32) -> u32 {
     return flag
 }
 
-let x: u32 = 1
-let y: u32 = 2
-call bad(x, y) -> out
+let first: u32 = 1
+let second: u32 = 2
+call bad(first, second) -> out
 emit out

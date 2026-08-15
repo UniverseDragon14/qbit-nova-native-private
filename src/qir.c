@@ -491,6 +491,7 @@ static int function_scope_find(const QNFunctionScope *scope,
 
 static int function_scope_declare(QNFunctionScope *scope,
                                   const char *name,
+                                  QNQIRType type,
                                   int line,
                                   int column,
                                   QNDiagnostic *diag) {
@@ -504,10 +505,15 @@ static int function_scope_declare(QNFunctionScope *scope,
                          "scalar variable limit exceeded (%u)", QN_MAX_SCALARS);
         return -1;
     }
+    if (type != QIR_TYPE_U32 && type != QIR_TYPE_BOOL) {
+        qn_diag_set_code(diag, "QN-E7623", line, column,
+                         "invalid Step8 function scalar type");
+        return -1;
+    }
     uint16_t id = scope->count++;
     snprintf(scope->scalars[id].name,
              sizeof(scope->scalars[id].name), "%s", name);
-    scope->scalars[id].type = QIR_TYPE_U32;
+    scope->scalars[id].type = type;
     return (int)id;
 }
 
@@ -515,7 +521,7 @@ static QNQIRValue function_scalar_value(const QNFunctionScope *scope,
                                         uint16_t id) {
     QNQIRValue value;
     memset(&value, 0, sizeof(value));
-    value.type = QIR_TYPE_U32;
+    value.type = scope->scalars[id].type;
     value.register_id = id;
     snprintf(value.name, sizeof(value.name), "%s", scope->scalars[id].name);
     return value;
@@ -558,15 +564,17 @@ static bool compile_function_call(QNQIRProgram *qir,
     int arg_ids[QN_MAX_FUNCTION_PARAMS] = {-1, -1};
     for (uint8_t i = 0u; i < stmt->as.call.arg_count; ++i) {
         arg_ids[i] = function_scope_find(scope, stmt->as.call.args[i]);
-        if (arg_ids[i] < 0) {
+        if (arg_ids[i] < 0 ||
+            scope->scalars[arg_ids[i]].type != QIR_TYPE_U32) {
             qn_diag_set_code(diag, "QN-E7585", stmt->line, stmt->column,
-                             "call to '%s' references unknown u32 argument '%s'",
+                             "call to '%s' requires initialized u32 argument '%s'",
                              fn->name, stmt->as.call.args[i]);
             return false;
         }
     }
 
     int output = function_scope_declare(scope, stmt->as.call.output,
+                                        QIR_TYPE_U32,
                                         stmt->line, stmt->column, diag);
     if (output < 0) return false;
 
@@ -592,6 +600,227 @@ static bool compile_function_call(QNQIRProgram *qir,
     return true;
 }
 
+typedef enum {
+    FUNCTION_FLOW_FALLTHROUGH = 0,
+    FUNCTION_FLOW_MUST_RETURN = 1
+} QNFunctionFlow;
+
+static bool compile_function_set(QNQIRProgram *qir,
+                                 const QNFunctionScope *scope,
+                                 const QNStmt *stmt,
+                                 QNDiagnostic *diag) {
+    int target = function_scope_find(scope, stmt->as.scalar_binary.output);
+    int left = function_scope_find(scope, stmt->as.scalar_binary.left);
+    int right = function_scope_find(scope, stmt->as.scalar_binary.right);
+    if (target < 0 || left < 0 || right < 0 ||
+        scope->scalars[target].type != QIR_TYPE_U32 ||
+        scope->scalars[left].type != QIR_TYPE_U32 ||
+        scope->scalars[right].type != QIR_TYPE_U32) {
+        qn_diag_set_code(diag, "QN-E7624", stmt->line, stmt->column,
+                         "Step8 function set requires existing u32 target and operands");
+        return false;
+    }
+
+    QNQIRInstruction ins;
+    memset(&ins, 0, sizeof(ins));
+    ins.line = stmt->line;
+    ins.column = stmt->column;
+    ins.opcode = stmt->kind == STMT_U32_SET_ADD ? QIR_OP_U32_SET_ADD :
+                 stmt->kind == STMT_U32_SET_SUB ? QIR_OP_U32_SET_SUB :
+                 stmt->kind == STMT_U32_SET_MUL ? QIR_OP_U32_SET_MUL :
+                                                  QIR_OP_U32_SET_DIV;
+    ins.out = function_scalar_value(scope, (uint16_t)target);
+    ins.a = function_scalar_value(scope, (uint16_t)left);
+    ins.b = function_scalar_value(scope, (uint16_t)right);
+    return append_qir(qir, ins, diag);
+}
+
+static bool compile_function_return(QNQIRProgram *qir,
+                                    const QNFunctionScope *scope,
+                                    const QNStmt *stmt,
+                                    QNDiagnostic *diag) {
+    int id = function_scope_find(scope, stmt->as.return_stmt.name);
+    if (id < 0 || scope->scalars[id].type != QIR_TYPE_U32) {
+        qn_diag_set_code(diag, "QN-E7586", stmt->line, stmt->column,
+                         "return requires initialized u32 scalar '%s'",
+                         stmt->as.return_stmt.name);
+        return false;
+    }
+
+    QNQIRInstruction ins;
+    memset(&ins, 0, sizeof(ins));
+    ins.line = stmt->line;
+    ins.column = stmt->column;
+    ins.opcode = QIR_OP_RETURN;
+    ins.a = function_scalar_value(scope, (uint16_t)id);
+    return append_qir(qir, ins, diag);
+}
+
+static bool compile_function_branch(QNQIRProgram *qir,
+                                    const QNFunctionScope *scope,
+                                    const QNStmt *items,
+                                    size_t count,
+                                    QNFunctionFlow *flow_out,
+                                    QNDiagnostic *diag) {
+    QNFunctionFlow flow = FUNCTION_FLOW_FALLTHROUGH;
+    for (size_t i = 0u; i < count; ++i) {
+        const QNStmt *stmt = &items[i];
+        if (flow == FUNCTION_FLOW_MUST_RETURN) {
+            qn_diag_set_code(diag, "QN-E7621", stmt->line, stmt->column,
+                             "statement after terminal return in function branch");
+            return false;
+        }
+        switch (stmt->kind) {
+            case STMT_U32_SET_ADD:
+            case STMT_U32_SET_SUB:
+            case STMT_U32_SET_MUL:
+            case STMT_U32_SET_DIV:
+                if (!compile_function_set(qir, scope, stmt, diag)) return false;
+                break;
+            case STMT_RETURN:
+                if (!compile_function_return(qir, scope, stmt, diag)) return false;
+                flow = FUNCTION_FLOW_MUST_RETURN;
+                break;
+            default:
+                qn_diag_set_code(diag, "QN-E7620", stmt->line, stmt->column,
+                                 "Step8 function branches permit only set and return");
+                return false;
+        }
+    }
+    *flow_out = flow;
+    return true;
+}
+
+static int function_scope_first_u32(const QNFunctionScope *scope) {
+    for (uint16_t i = 0u; i < scope->count; ++i) {
+        if (scope->scalars[i].type == QIR_TYPE_U32) return (int)i;
+    }
+    return -1;
+}
+
+static bool compile_function_if(QNQIRProgram *qir,
+                                const QNFunctionScope *scope,
+                                const QNStmt *stmt,
+                                QNFunctionFlow *flow_out,
+                                QNDiagnostic *diag) {
+    int condition = function_scope_find(scope, stmt->as.if_stmt.condition);
+    if (condition < 0 || scope->scalars[condition].type != QIR_TYPE_BOOL) {
+        qn_diag_set_code(diag, "QN-E7531", stmt->line, stmt->column,
+                         "Step8 function if condition must be initialized bool '%s'",
+                         stmt->as.if_stmt.condition);
+        return false;
+    }
+
+    QNQIRInstruction branch;
+    memset(&branch, 0, sizeof(branch));
+    branch.line = stmt->line;
+    branch.column = stmt->column;
+    branch.opcode = QIR_OP_JUMP_IF_FALSE;
+    branch.a = function_scalar_value(scope, (uint16_t)condition);
+    size_t jump_if_index = qir->instruction_count;
+    if (!append_qir(qir, branch, diag)) return false;
+
+    QNFunctionFlow then_flow = FUNCTION_FLOW_FALLTHROUGH;
+    if (!compile_function_branch(qir, scope,
+                                 stmt->as.if_stmt.then_items,
+                                 stmt->as.if_stmt.then_count,
+                                 &then_flow, diag)) return false;
+
+    memset(&branch, 0, sizeof(branch));
+    branch.line = stmt->line;
+    branch.column = stmt->column;
+    branch.opcode = QIR_OP_JUMP;
+    size_t jump_end_index = qir->instruction_count;
+    if (!append_qir(qir, branch, diag)) return false;
+
+    if (qir->instruction_count > UINT32_MAX) return false;
+    qir->instructions[jump_if_index].imm = (uint32_t)qir->instruction_count;
+
+    QNFunctionFlow else_flow = FUNCTION_FLOW_FALLTHROUGH;
+    if (!compile_function_branch(qir, scope,
+                                 stmt->as.if_stmt.else_items,
+                                 stmt->as.if_stmt.else_count,
+                                 &else_flow, diag)) return false;
+
+    QNFunctionFlow flow =
+        then_flow == FUNCTION_FLOW_MUST_RETURN &&
+        else_flow == FUNCTION_FLOW_MUST_RETURN
+            ? FUNCTION_FLOW_MUST_RETURN
+            : FUNCTION_FLOW_FALLTHROUGH;
+
+    if (flow == FUNCTION_FLOW_MUST_RETURN) {
+        int anchor = function_scope_first_u32(scope);
+        if (anchor < 0) {
+            qn_diag_set_code(diag, "QN-E7625", stmt->line, stmt->column,
+                             "all-return function if has no u32 structural return anchor");
+            return false;
+        }
+        QNQIRInstruction synthetic;
+        memset(&synthetic, 0, sizeof(synthetic));
+        synthetic.line = stmt->line;
+        synthetic.column = stmt->column;
+        synthetic.opcode = QIR_OP_RETURN;
+        synthetic.a = function_scalar_value(scope, (uint16_t)anchor);
+        if (!append_qir(qir, synthetic, diag)) return false;
+    }
+
+    if (qir->instruction_count > UINT32_MAX) return false;
+    qir->instructions[jump_end_index].imm =
+        flow == FUNCTION_FLOW_MUST_RETURN
+            ? (uint32_t)(qir->instruction_count - 1u)
+            : (uint32_t)qir->instruction_count;
+
+    *flow_out = flow;
+    return true;
+}
+
+static bool compile_function_repeat(QNQIRProgram *qir,
+                                    const QNFunctionScope *scope,
+                                    const QNStmt *stmt,
+                                    QNDiagnostic *diag) {
+    if (stmt->as.repeat_stmt.iterations == 0u ||
+        stmt->as.repeat_stmt.iterations > QN_MAX_REPEAT_ITERATIONS ||
+        stmt->as.repeat_stmt.body_count == 0u) {
+        qn_diag_set_code(diag, "QN-E7550", stmt->line, stmt->column,
+                         "function repeat count/body violates Step8 bounds");
+        return false;
+    }
+
+    QNQIRInstruction enter;
+    memset(&enter, 0, sizeof(enter));
+    enter.line = stmt->line;
+    enter.column = stmt->column;
+    enter.opcode = QIR_OP_REPEAT_ENTER;
+    enter.a.register_id = (uint16_t)stmt->as.repeat_stmt.iterations;
+    size_t enter_index = qir->instruction_count;
+    if (!append_qir(qir, enter, diag)) return false;
+
+    for (size_t i = 0u; i < stmt->as.repeat_stmt.body_count; ++i) {
+        const QNStmt *body = &stmt->as.repeat_stmt.body_items[i];
+        if (body->kind != STMT_U32_SET_ADD &&
+            body->kind != STMT_U32_SET_SUB &&
+            body->kind != STMT_U32_SET_MUL &&
+            body->kind != STMT_U32_SET_DIV) {
+            qn_diag_set_code(diag, "QN-E7622", body->line, body->column,
+                             "Step8 function repeat body permits only set");
+            return false;
+        }
+        if (!compile_function_set(qir, scope, body, diag)) return false;
+    }
+
+    QNQIRInstruction next;
+    memset(&next, 0, sizeof(next));
+    next.line = stmt->line;
+    next.column = stmt->column;
+    next.opcode = QIR_OP_REPEAT_NEXT;
+    next.imm = (uint32_t)enter_index;
+    if (!append_qir(qir, next, diag)) return false;
+
+    if (qir->instruction_count > UINT32_MAX) return false;
+    qir->instructions[enter_index].imm = (uint32_t)qir->instruction_count;
+    return true;
+}
+
 static bool compile_function_body(QNQIRProgram *qir,
                                   const QNProgram *program,
                                   size_t function_index,
@@ -602,7 +831,7 @@ static bool compile_function_body(QNQIRProgram *qir,
     memset(&scope, 0, sizeof(scope));
 
     for (uint8_t i = 0u; i < fn->param_count; ++i) {
-        if (function_scope_declare(&scope, fn->params[i],
+        if (function_scope_declare(&scope, fn->params[i], QIR_TYPE_U32,
                                    fn->line, fn->column, diag) < 0) {
             return false;
         }
@@ -615,7 +844,7 @@ static bool compile_function_body(QNQIRProgram *qir,
     if (qir->instruction_count > UINT32_MAX) return false;
     meta->entry_instruction = (uint32_t)qir->instruction_count;
 
-    bool returned = false;
+    QNFunctionFlow flow = FUNCTION_FLOW_FALLTHROUGH;
     bool saw_call = false;
     for (size_t i = 0u; i < fn->body_count; ++i) {
         const QNStmt *stmt = &fn->body_items[i];
@@ -624,15 +853,16 @@ static bool compile_function_body(QNQIRProgram *qir,
         ins.line = stmt->line;
         ins.column = stmt->column;
 
-        if (returned) {
+        if (flow == FUNCTION_FLOW_MUST_RETURN) {
             qn_diag_set_code(diag, "QN-E7578", stmt->line, stmt->column,
-                             "return must be the final function statement");
+                             "statement follows an all-path function return");
             return false;
         }
 
         switch (stmt->kind) {
             case STMT_U32_LET: {
                 int id = function_scope_declare(&scope, stmt->as.u32_let.name,
+                                                QIR_TYPE_U32,
                                                 stmt->line, stmt->column, diag);
                 if (id < 0) return false;
                 ins.opcode = QIR_OP_U32_CONST;
@@ -644,58 +874,89 @@ static bool compile_function_body(QNQIRProgram *qir,
             case STMT_U32_ADD:
             case STMT_U32_SUB:
             case STMT_U32_MUL:
-            case STMT_U32_DIV: {
+            case STMT_U32_DIV:
+            case STMT_U32_EQ:
+            case STMT_U32_NE:
+            case STMT_U32_LT:
+            case STMT_U32_LE:
+            case STMT_U32_GT:
+            case STMT_U32_GE: {
                 int left = function_scope_find(&scope, stmt->as.scalar_binary.left);
                 int right = function_scope_find(&scope, stmt->as.scalar_binary.right);
-                if (left < 0 || right < 0) {
-                    qn_diag_set_code(diag, "QN-E7504", stmt->line, stmt->column,
-                                     "function arithmetic reads unknown u32 scalar");
+                if (left < 0 || right < 0 ||
+                    scope.scalars[left].type != QIR_TYPE_U32 ||
+                    scope.scalars[right].type != QIR_TYPE_U32) {
+                    qn_diag_set_code(diag, "QN-E7626", stmt->line, stmt->column,
+                                     "function arithmetic/comparison requires u32 operands");
                     return false;
                 }
-                int output = function_scope_declare(&scope,
-                                                    stmt->as.scalar_binary.output,
-                                                    stmt->line, stmt->column, diag);
+
+                bool comparison = stmt->kind == STMT_U32_EQ ||
+                                  stmt->kind == STMT_U32_NE ||
+                                  stmt->kind == STMT_U32_LT ||
+                                  stmt->kind == STMT_U32_LE ||
+                                  stmt->kind == STMT_U32_GT ||
+                                  stmt->kind == STMT_U32_GE;
+                int output = function_scope_declare(
+                    &scope, stmt->as.scalar_binary.output,
+                    comparison ? QIR_TYPE_BOOL : QIR_TYPE_U32,
+                    stmt->line, stmt->column, diag);
                 if (output < 0) return false;
+
                 ins.opcode = stmt->kind == STMT_U32_ADD ? QIR_OP_U32_ADD :
                              stmt->kind == STMT_U32_SUB ? QIR_OP_U32_SUB :
                              stmt->kind == STMT_U32_MUL ? QIR_OP_U32_MUL :
-                                                          QIR_OP_U32_DIV;
+                             stmt->kind == STMT_U32_DIV ? QIR_OP_U32_DIV :
+                             stmt->kind == STMT_U32_EQ ? QIR_OP_U32_EQ :
+                             stmt->kind == STMT_U32_NE ? QIR_OP_U32_NE :
+                             stmt->kind == STMT_U32_LT ? QIR_OP_U32_LT :
+                             stmt->kind == STMT_U32_LE ? QIR_OP_U32_LE :
+                             stmt->kind == STMT_U32_GT ? QIR_OP_U32_GT :
+                                                        QIR_OP_U32_GE;
                 ins.a = function_scalar_value(&scope, (uint16_t)left);
                 ins.b = function_scalar_value(&scope, (uint16_t)right);
                 ins.out = function_scalar_value(&scope, (uint16_t)output);
                 if (!append_qir(qir, ins, diag)) return false;
                 break;
             }
+            case STMT_U32_SET_ADD:
+            case STMT_U32_SET_SUB:
+            case STMT_U32_SET_MUL:
+            case STMT_U32_SET_DIV:
+                if (!compile_function_set(qir, &scope, stmt, diag)) return false;
+                break;
             case STMT_CALL:
                 if (!compile_function_call(qir, program, &scope, stmt,
                                            call_graph, (int)function_index,
                                            &saw_call, diag)) return false;
                 break;
-            case STMT_RETURN: {
-                int id = function_scope_find(&scope, stmt->as.return_stmt.name);
-                if (id < 0) {
-                    qn_diag_set_code(diag, "QN-E7586", stmt->line, stmt->column,
-                                     "return references unknown u32 scalar '%s'",
-                                     stmt->as.return_stmt.name);
+            case STMT_IF: {
+                QNFunctionFlow if_flow = FUNCTION_FLOW_FALLTHROUGH;
+                if (!compile_function_if(qir, &scope, stmt, &if_flow, diag)) {
                     return false;
                 }
-                ins.opcode = QIR_OP_RETURN;
-                ins.a = function_scalar_value(&scope, (uint16_t)id);
-                if (!append_qir(qir, ins, diag)) return false;
-                returned = true;
+                flow = if_flow;
                 break;
             }
+            case STMT_REPEAT:
+                if (!compile_function_repeat(qir, &scope, stmt, diag)) return false;
+                break;
+            case STMT_RETURN:
+                if (!compile_function_return(qir, &scope, stmt, diag)) return false;
+                flow = FUNCTION_FLOW_MUST_RETURN;
+                break;
             default:
                 qn_diag_set_code(diag, "QN-E7575", stmt->line, stmt->column,
-                                 "unsupported statement inside Step6 function");
+                                 "unsupported statement inside Step8 function");
                 return false;
         }
     }
 
     (void)saw_call;
-    if (!returned) {
+    if (flow != FUNCTION_FLOW_MUST_RETURN) {
         qn_diag_set_code(diag, "QN-E7579", fn->line, fn->column,
-                         "Step6 function '%s' must terminate with return", fn->name);
+                         "Step8 function '%s' does not return on every reachable path",
+                         fn->name);
         return false;
     }
     if (qir->instruction_count > UINT32_MAX) return false;
