@@ -1,34 +1,155 @@
-# QBIT NOVA Native v0.5
+# QBIT NOVA Native — Stage 7 Step 7 (QBC v9)
 
-Native C17 language foundation by Universal Dragon Aslam.
+Native C17 programming-language and deterministic QBC/QVM runtime by Universal Dragon Aslam.
 
-## Stage 5
+> Current engineering checkpoint: **Stage 7 Step 7 — Runtime Inputs**  
+> Current QBC format for runtime-input programs: **QBC v9**  
+> Final target: **v10 — not released, not finished**
 
-v0.5 adds OpenSSL-backed Ed25519 public-key approvals while preserving the
-v0.4 HMAC approval format for compatibility.
+## Truth boundary
+
+```text
+physical_qpu=false
+runtime=software_virtual_qcpu
+python_runtime_dependency=false
+current_stage=stage7_step7_runtime_inputs
+current_qbc_runtime_input_version=9
+final_v10=false
+release_class=private_engineering_checkpoint
+```
+
+QBIT NOVA Native is software running on classical hardware. It does not claim that Raspberry Pi 5 or any ordinary computer becomes a physical quantum computer.
+
+## Current pipeline
 
 ```text
 .qn source
-  -> lexer
-  -> AST
+  -> deterministic lexer
+  -> parser / AST
+  -> semantic validation
   -> typed QIR
-  -> capability metadata
   -> QBC
-  -> Ed25519 signed approval verification
-  -> deny-by-default guard
+  -> capability guard
+  -> approval / trust / revocation / replay checks
   -> native QVM
+  -> deterministic result
   -> evidence receipt
 ```
 
-## Why OpenSSL
+## Stage history
 
-The Raspberry Pi 5 environment used for verification already provides OpenSSL
-3.5.x development metadata through `pkg-config`, while libsodium is absent.
-The adapter uses the supported EVP Ed25519 interface.
+```text
+Stage 5.2   Trust + replay + revocation security freeze
+Stage 6     Raspberry Pi 5 / bounded V3D GPU proof freeze
+Stage 7.1   Typed u32 scalar
+Stage 7.2   u32 arithmetic
+Stage 7.3   comparisons + bool
+Stage 7.4   if / else control flow
+Stage 7.5   bounded repeat
+Stage 7.6   native typed functions / QBC v8 freeze
+Stage 7.7   deterministic runtime u32 inputs / QBC v9 freeze
+v10         FINAL TARGET — not released yet
+```
 
-Ed25519 signing and verification use one-shot EVP operations with a NULL digest.
+## Stage 7 Step 7 — Runtime Inputs
 
-## Build
+Runtime inputs are explicit typed language declarations, not blind external overwrites.
+
+```qn
+input price: u32
+input qty: u32
+sum = price + qty
+emit sum
+```
+
+Execution:
+
+```bash
+./build/qnova run program.qn \
+  --input price=120 \
+  --input qty=3
+```
+
+Compiled QBC can also be executed with inputs:
+
+```bash
+./build/qnova exec program.qbc \
+  --input price=120 \
+  --input qty=3
+```
+
+The Step 7 runtime-input ABI supports deterministic input-name identities, canonical input slots, u32 values, deterministic input digests, receipt redaction, and QBC v9 validation.
+
+Current limits include:
+
+- maximum runtime inputs: 16
+- runtime input ABI: 1
+- runtime input type: u32
+- QBC v9 header size: 104 bytes
+- QBC v9 runtime-input record size: 36 bytes
+- runtime-input programs are CPU-routed and explicit Vulkan requests fail closed
+
+## Frozen Step 6 compatibility
+
+Stage 7 Step 7 does **not** reopen or rewrite the frozen Step 6 QBC v8 function checkpoint.
+
+```text
+Step6 commit:
+3640fb2aa4f61c6da3794903da44bba5b649db15
+
+Frozen Step6 function QBC v8 SHA256:
+159aa91977e174937a2a4a04923d01a79d2fadcacc7a6897b6e32bc3263efb67
+```
+
+## Current Step 7 freeze checkpoint
+
+```text
+Implementation commit:
+d17b1f94bf82aef55427a5405193a97b0ccddfe8
+
+Tag:
+qbit-nova-native-stage7-step7-runtime-inputs-freeze
+
+Canonical QBC v9 SHA256:
+2415b4eba99c6f5c79555fea9999b8162fe53eacae07434627758c03655a84f3
+
+Runtime input receipt SHA256:
+da67a87f09f0bb6090d0e2092179edef51cd38f5fa17c72d1aee6e190979df99
+```
+
+The current freeze tag is an annotated Git tag but is **unsigned**. The checkpoint remains valid as a repository tag, but future final release provenance should use a signed tag and/or signed final manifest.
+
+## Security layers
+
+- OpenSSL Ed25519 signed approvals
+- trusted issuer store
+- token and issuer revocation checks
+- atomic persistent replay ledger
+- deny-by-default capability guard
+- bounded execution preflight
+- deterministic receipts
+- `shell.exec` blocked
+
+HMAC v0.4 remains only a legacy compatibility path.
+
+## Raspberry Pi 5 / GPU boundary
+
+Stage 6 includes a bounded deterministic Vulkan compute proof for Raspberry Pi 5 V3D hardware. It validates a fixed uint32 vector-add workload against a deterministic CPU reference.
+
+This is not arbitrary shader execution and is not a physical QPU claim.
+
+## Build and test
+
+Requirements:
+
+```text
+C17 compiler
+GNU Make
+pkg-config
+OpenSSL development package
+```
+
+Build:
 
 ```bash
 make clean
@@ -36,96 +157,40 @@ make
 make test
 ```
 
-Dependencies:
+Strict flags:
 
 ```text
-C17 compiler
-make
-pkg-config
-OpenSSL development package
+-std=c17
+-O2
+-Wall
+-Wextra
+-Wpedantic
+-Werror
 ```
 
-## Generate an issuer keypair
+The test target includes trust-store, replay, revocation, GPU adapter/compute/routing, typed scalar, arithmetic, comparisons, if/else, bounded repeat, native functions, the main regression suite, and Stage 7 runtime-input tests.
 
-```bash
-./build/qnova approval keygen-ed25519 \
-  --private issuer-private.key \
-  --public issuer-public.key
+## Release / freeze policy
+
+Stage checkpoints are currently preserved using Git tags.
+
+A future **v10 final release** should generate a fresh final freeze manifest from the exact final source tree and final build artifacts, then sign the release provenance. The old Stage 5.1 manifest must not be treated as the final v10 manifest because it describes an earlier source state.
+
+Recommended final v10 provenance set:
+
+```text
+final commit SHA
+signed annotated Git tag
+fresh source-tree manifest
+source archive SHA256
+reproducible binary SHA256
+final QBC format / ABI hashes
+complete regression evidence
+signature / signer identity
 ```
 
-The private key file is a raw 32-byte Ed25519 seed and is written with mode
-`0600` on Unix-like systems. Never commit it.
+## Status
 
-## Issue a signed approval
+**QBIT NOVA Native is not finished yet.**
 
-```bash
-./build/qnova approval issue-ed25519 \
-  examples/approval_model.qn \
-  model.exec \
-  --private-key issuer-private.key \
-  --expires-at 2000003600 \
-  --context local-review \
-  -o model.qns
-```
-
-## Verify
-
-```bash
-./build/qnova approval verify-ed25519 \
-  examples/approval_model.qn \
-  model.qns \
-  --public-key issuer-public.key
-```
-
-## Execute
-
-```bash
-./build/qnova run examples/approval_model.qn \
-  --signed-approval-file model.qns \
-  --approval-public-key-file issuer-public.key \
-  --receipt build/model-receipt.json
-```
-
-## Canonical token
-
-The signed binary prefix contains:
-
-- `QNAT1` magic
-- fixed 32-byte domain separation field
-- SHA-256 issuer fingerprint
-- stable versioned capability ID
-- exact source SHA-256
-- issue and expiry times
-- 16-byte nonce
-- big-endian context length
-- context bytes
-
-A 64-byte Ed25519 signature is appended. The parser rejects trailing bytes,
-truncation, unknown capability IDs and oversized contexts.
-
-## Stable capability IDs
-
-| ID | Capability | Policy |
-|---:|---|---|
-| `0x00000001` | `quantum.simulate` | safe |
-| `0x00000002` | `evidence.emit` | safe |
-| `0x00000100` | `model.exec` | approval required |
-| `0x00000101` | `file.write` | approval required |
-| `0x00000102` | `network` | approval required |
-| `0x00000103` | `device.control` | approval required |
-| `0x80000001` | `shell.exec` | blocked |
-
-A valid signature cannot override a blocked capability.
-
-## Honest limitations
-
-- No replay ledger is implemented in v0.5.
-- No revocation store is implemented in v0.5.
-- The verifier trusts the public-key file explicitly supplied by the operator.
-- Raw key files are used; encrypted PKCS#8 support is not implemented.
-- This remains a software virtual QCPU, not physical quantum hardware.
-- ARM NEON tensor work is deferred to a later performance stage.
-
-## Project separation
-
-QBIT NOVA C remains a separate frozen Devpost project and is not modified.
+Current engineering state is Stage 7 Step 7 with QBC v9 runtime inputs. **v10 is reserved for the final milestone and must not be claimed until the final implementation, regression, freeze, manifest, and release-signing work is complete.**
