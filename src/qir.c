@@ -1365,10 +1365,247 @@ const char *qn_qir_opcode_name(QNQIROpcode opcode) {
     }
 }
 
+
+/* ============================================================
+ * Stage7 Step9A native tensor frontend / metadata path.
+ *
+ * This phase intentionally stops before QBC v10 lowering.
+ * It proves parser + typed metadata + bounded memory contracts
+ * without modifying the frozen QBC v1-v9 encoder/decoder.
+ * ============================================================ */
+
+static bool step9_program_has_tensor_declaration(const QNProgram *program) {
+    if (!program) return false;
+
+    for (size_t i = 0u; i < program->count; ++i) {
+        if (program->items[i].kind == STMT_TENSOR_DECL) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static int step9_find_tensor(const QNQIRProgram *qir, const char *name) {
+    if (!qir || !name) return -1;
+
+    for (uint16_t i = 0u; i < qir->tensor_count; ++i) {
+        if (strcmp(qir->tensors[i].name, name) == 0) {
+            return (int)i;
+        }
+    }
+
+    return -1;
+}
+
+static bool step9_tensor_byte_size(
+    QNTensorElementType type,
+    uint32_t element_count,
+    uint32_t *bytes_out
+) {
+    if (!bytes_out ||
+        element_count == 0u ||
+        element_count > QN_MAX_TENSOR_ELEMENTS) {
+        return false;
+    }
+
+    uint32_t element_size = 0u;
+
+    switch (type) {
+        case QN_TENSOR_ELEMENT_F32:
+            element_size = 4u;
+            break;
+
+        case QN_TENSOR_ELEMENT_I8:
+            element_size = 1u;
+            break;
+
+        default:
+            return false;
+    }
+
+    if (element_count > UINT32_MAX / element_size) {
+        return false;
+    }
+
+    uint32_t bytes = element_count * element_size;
+
+    if (bytes == 0u ||
+        bytes > QN_MAX_TENSOR_BYTES) {
+        return false;
+    }
+
+    *bytes_out = bytes;
+    return true;
+}
+
+static QNStatus qn_qir_build_step9_tensor_metadata_program(
+    const QNProgram *program,
+    const uint8_t source_digest[32],
+    QNQIRProgram *out,
+    QNDiagnostic *diag
+) {
+    if (!program || !source_digest || !out || !diag) {
+        return QN_ERR_SEMANTIC;
+    }
+
+    memset(out, 0, sizeof(*out));
+    memcpy(out->source_digest, source_digest, 32);
+
+    out->default_shots = 1u;
+    out->default_seed = 1u;
+    out->tensor_abi_version = QN_TENSOR_ABI_V1;
+
+    uint64_t total_bytes = 0u;
+
+    for (size_t i = 0u; i < program->count; ++i) {
+        const QNStmt *stmt = &program->items[i];
+
+        if (stmt->kind != STMT_TENSOR_DECL) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7703",
+                stmt->line,
+                stmt->column,
+                "Step9A tensor metadata programs permit tensor declarations only"
+            );
+            goto fail;
+        }
+
+        if (out->tensor_count >= QN_MAX_TENSORS) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7704",
+                stmt->line,
+                stmt->column,
+                "Step9 tensor declaration limit exceeded (%u)",
+                QN_MAX_TENSORS
+            );
+            goto fail;
+        }
+
+        const char *name = stmt->as.tensor_decl.name;
+
+        if (step9_find_tensor(out, name) >= 0) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7705",
+                stmt->line,
+                stmt->column,
+                "duplicate tensor '%s'",
+                name
+            );
+            goto fail;
+        }
+
+        uint32_t byte_size = 0u;
+
+        if (!step9_tensor_byte_size(
+                stmt->as.tensor_decl.element_type,
+                stmt->as.tensor_decl.element_count,
+                &byte_size)) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7706",
+                stmt->line,
+                stmt->column,
+                "invalid or oversized tensor '%s'",
+                name
+            );
+            goto fail;
+        }
+
+        if (total_bytes > UINT64_MAX - byte_size) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7707",
+                stmt->line,
+                stmt->column,
+                "tensor memory accounting overflow"
+            );
+            goto fail;
+        }
+
+        total_bytes += byte_size;
+
+        if (total_bytes > QN_MAX_TOTAL_TENSOR_BYTES) {
+            qn_diag_set_code(
+                diag,
+                "QN-E7708",
+                stmt->line,
+                stmt->column,
+                "Step9 total tensor memory exceeds %u bytes",
+                QN_MAX_TOTAL_TENSOR_BYTES
+            );
+            goto fail;
+        }
+
+        QNQIRTensorInfo *tensor = &out->tensors[out->tensor_count++];
+
+        memset(tensor, 0, sizeof(*tensor));
+
+        snprintf(
+            tensor->name,
+            sizeof(tensor->name),
+            "%s",
+            name
+        );
+
+        tensor->element_type =
+            (uint8_t)stmt->as.tensor_decl.element_type;
+
+        /*
+         * A1 contract:
+         * source tensor declarations have AUTO device by default.
+         * Step9 execution later resolves AUTO -> CPU.
+         */
+        tensor->device = QN_TENSOR_DEVICE_AUTO;
+        tensor->flags = 0u;
+        tensor->element_count =
+            stmt->as.tensor_decl.element_count;
+        tensor->byte_size = byte_size;
+    }
+
+    if (out->tensor_count == 0u) {
+        qn_diag_set_code(
+            diag,
+            "QN-E7709",
+            1,
+            1,
+            "Step9 tensor program contains no tensor declarations"
+        );
+        goto fail;
+    }
+
+    /*
+     * Step9A is metadata-only.
+     * QBC v10 / execution opcodes intentionally remain unimplemented
+     * until the next gate.
+     */
+    out->capability_mask = 0u;
+
+    return QN_OK;
+
+fail:
+    qn_qir_free(out);
+    return QN_ERR_SEMANTIC;
+}
+
 QNStatus qn_qir_build(const QNProgram *program,
                       const uint8_t source_digest[32],
                       QNQIRProgram *out,
                       QNDiagnostic *diag) {
+
+    if (step9_program_has_tensor_declaration(program)) {
+        return qn_qir_build_step9_tensor_metadata_program(
+            program,
+            source_digest,
+            out,
+            diag
+        );
+    }
+
+
     if (!program || !source_digest || !out || !diag) {
         if (diag) {
             qn_diag_set(diag, 0, 0, "invalid QIR build arguments");

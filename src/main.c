@@ -1472,22 +1472,163 @@ int main(int argc,char **argv) {
 
     if(!strcmp(argv[1],"build")) {
         const char *out_path=NULL;
+
         for(int i=3;i<argc;i++) {
-            if(!strcmp(argv[i],"-o") && i+1<argc) out_path=argv[++i];
-            else { fprintf(stderr,"unknown option: %s\n",argv[i]); return QN_ERR_PARSE; }
+            if(!strcmp(argv[i],"-o") && i+1<argc) {
+                out_path=argv[++i];
+            } else {
+                fprintf(
+                    stderr,
+                    "unknown option: %s\n",
+                    argv[i]
+                );
+                return QN_ERR_PARSE;
+            }
         }
-        if(!out_path){ fprintf(stderr,"build requires -o <file.qbc>\n"); return QN_ERR_PARSE; }
-        QNBytecode bc={0}; QNStatus st=compile_source(argv[2],&bc,NULL,NULL,&diag);
-        if(st!=QN_OK) return print_diag(st,&diag);
-        uint8_t *data=NULL; size_t n=0;
-        st=qn_qbc_encode(&bc,&data,&n,&diag);
-        if(st==QN_OK && !qn_write_binary_file(out_path,data,n,&diag)) st=QN_ERR_IO;
-        if(st==QN_OK){
-            uint8_t d[32]; char hex[65]; qn_sha256(data,n,d); qn_hex32(d,hex);
-            printf("QBIT_NOVA_QBC_BUILD_V01\noutput=%s\nbytes=%zu\nsha256=%s\n",out_path,n,hex);
+
+        if(!out_path) {
+            fprintf(
+                stderr,
+                "build requires -o <file.qbc>\n"
+            );
+            return QN_ERR_PARSE;
         }
-        free(data); qn_bytecode_free(&bc);
-        return st==QN_OK?0:print_diag(st,&diag);
+
+        QNBytecode bc={0};
+        QNProgram program={0};
+
+        /*
+         * Keep the frontend-valid AST alive for the BUILD-only
+         * pre-V10 serialization boundary check.
+         *
+         * CHECK continues to use compile_source() normally and
+         * therefore remains a frontend/QIR validation operation.
+         */
+        QNStatus st=compile_source(
+            argv[2],
+            &bc,
+            NULL,
+            &program,
+            &diag
+        );
+
+        if(st!=QN_OK) {
+            return print_diag(
+                st,
+                &diag
+            );
+        }
+
+        /*
+         * STEP9_PRE_V10_TENSOR_BUILD_FAIL_CLOSED
+         *
+         * Tensor declarations are now valid frontend/QIR syntax.
+         *
+         * They MUST NOT be serialized into frozen QBC v1-v9.
+         *
+         * QBC v10 will be enabled only after the complete native
+         * data/media/module/capability ABI release gate exists.
+         *
+         * This guard deliberately lives in BUILD, immediately
+         * before QBC serialization.
+         *
+         * Therefore:
+         *
+         *   qnova check tensor.qn
+         *       -> frontend-valid
+         *
+         *   qnova build tensor.qn
+         *       -> QN-E7710 fail-closed
+         *
+         * No legacy QBC is emitted for tensor-bearing programs.
+         */
+        for(size_t i=0u;i<program.count;++i) {
+            const QNStmt *stmt=&program.items[i];
+
+            if(stmt->kind==STMT_TENSOR_DECL) {
+                qn_diag_set_code(
+                    &diag,
+                    "QN-E7710",
+                    stmt->line,
+                    stmt->column,
+                    "native tensor program is frontend-valid but "
+                    "QBC v10 serialization is intentionally not "
+                    "released yet"
+                );
+
+                qn_program_free(&program);
+                qn_bytecode_free(&bc);
+
+                return print_diag(
+                    QN_ERR_QBC,
+                    &diag
+                );
+            }
+        }
+
+        /*
+         * AST is no longer needed after the pre-serialization
+         * policy gate has passed.
+         */
+        qn_program_free(&program);
+
+        uint8_t *data=NULL;
+        size_t n=0;
+
+        st=qn_qbc_encode(
+            &bc,
+            &data,
+            &n,
+            &diag
+        );
+
+        if(
+            st==QN_OK &&
+            !qn_write_binary_file_atomic(
+                out_path,
+                data,
+                n,
+                &diag
+            )
+        ) {
+            st=QN_ERR_IO;
+        }
+
+        if(st==QN_OK) {
+            uint8_t d[32];
+            char hex[65];
+
+            qn_sha256(
+                data,
+                n,
+                d
+            );
+
+            qn_hex32(
+                d,
+                hex
+            );
+
+            printf(
+                "QBIT_NOVA_QBC_BUILD_V01\n"
+                "output=%s\n"
+                "bytes=%zu\n"
+                "sha256=%s\n",
+                out_path,
+                n,
+                hex
+            );
+        }
+
+        free(data);
+        qn_bytecode_free(&bc);
+
+        return st==QN_OK
+            ? 0
+            : print_diag(
+                st,
+                &diag
+            );
     }
 
     if(!strcmp(argv[1],"run") || !strcmp(argv[1],"exec")) {

@@ -85,6 +85,22 @@ typedef struct {
     uint8_t flags;
 } QNQIRInputInfo;
 
+enum {
+    QN_TENSOR_ABI_V1 = 1u,
+    QN_TENSOR_DEVICE_CPU = 1u,
+    QN_TENSOR_DEVICE_AUTO = 2u,
+    QN_TENSOR_DEVICE_VULKAN = 3u
+};
+
+typedef struct {
+    char name[QN_NAME_CAP];
+    uint8_t element_type;
+    uint8_t device;
+    uint16_t flags;
+    uint32_t element_count;
+    uint32_t byte_size;
+} QNQIRTensorInfo;
+
 typedef struct {
     uint16_t total_qubits;
     uint16_t register_count;
@@ -96,6 +112,10 @@ typedef struct {
     uint16_t input_count;
     uint16_t input_abi_version;
     QNQIRInputInfo inputs[QN_MAX_RUNTIME_INPUTS];
+
+    uint16_t tensor_count;
+    uint16_t tensor_abi_version;
+    QNQIRTensorInfo tensors[QN_MAX_TENSORS];
     uint64_t initial_basis;
     uint32_t default_shots;
     uint64_t default_seed;

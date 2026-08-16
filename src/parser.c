@@ -207,6 +207,106 @@ static bool parse_u32_let_after_keyword(Parser *p, QNStmt *s) {
     return true;
 }
 
+/*
+ * Step9 tensor syntax stays contextual so frozen identifiers remain legal.
+ *
+ * Recognized declaration:
+ *
+ *     tensor weights: f32[4]
+ *     tensor bytes: i8[32]
+ *
+ * The word "tensor" is NOT promoted to a lexer keyword.
+ */
+static bool step9_is_word(const QNToken *token, const char *word) {
+    return token &&
+           token->kind == TOK_IDENT &&
+           strcmp(token->text, word) == 0;
+}
+
+static bool step9_is_tensor_declaration(Parser *p) {
+    if (!p || p->at + 3u >= p->tokens->count) return false;
+
+    const QNToken *keyword = &p->tokens->items[p->at];
+    const QNToken *name = &p->tokens->items[p->at + 1u];
+    const QNToken *colon = &p->tokens->items[p->at + 2u];
+    const QNToken *type = &p->tokens->items[p->at + 3u];
+
+    if (!step9_is_word(keyword, "tensor") ||
+        name->kind != TOK_IDENT ||
+        colon->kind != TOK_COLON ||
+        type->kind != TOK_IDENT) {
+        return false;
+    }
+
+    return strcmp(type->text, "f32") == 0 ||
+           strcmp(type->text, "i8") == 0;
+}
+
+static bool parse_step9_tensor_declaration(Parser *p, QNStmt *s) {
+    if (!p || !s || !step9_is_tensor_declaration(p)) return false;
+
+    const QNToken *keyword = peek(p);
+    (void)keyword;
+    p->at++;
+
+    const QNToken *name = expect(p, TOK_IDENT, "tensor name");
+    if (!name ||
+        !expect(p, TOK_COLON, "':'")) {
+        return false;
+    }
+
+    const QNToken *type = expect(p, TOK_IDENT, "tensor element type");
+    if (!type) return false;
+
+    QNTensorElementType element_type;
+    if (strcmp(type->text, "f32") == 0) {
+        element_type = QN_TENSOR_ELEMENT_F32;
+    } else if (strcmp(type->text, "i8") == 0) {
+        element_type = QN_TENSOR_ELEMENT_I8;
+    } else {
+        qn_diag_set_code(
+            p->diag,
+            "QN-E7701",
+            type->line,
+            type->column,
+            "Step9 tensor element type must be f32 or i8"
+        );
+        return false;
+    }
+
+    if (!expect(p, TOK_LBRACKET, "'['")) return false;
+
+    const QNToken *count = expect(p, TOK_INT, "tensor element count");
+    if (!count) return false;
+
+    if (!expect(p, TOK_RBRACKET, "']'")) return false;
+
+    if (count->int_value == 0u ||
+        count->int_value > QN_MAX_TENSOR_ELEMENTS) {
+        qn_diag_set_code(
+            p->diag,
+            "QN-E7702",
+            count->line,
+            count->column,
+            "Step9 tensor element count must be 1..%u",
+            QN_MAX_TENSOR_ELEMENTS
+        );
+        return false;
+    }
+
+    s->kind = STMT_TENSOR_DECL;
+    snprintf(
+        s->as.tensor_decl.name,
+        sizeof(s->as.tensor_decl.name),
+        "%s",
+        name->text
+    );
+    s->as.tensor_decl.element_type = element_type;
+    s->as.tensor_decl.element_count = (uint32_t)count->int_value;
+
+    return true;
+}
+
 static bool parse_scalar_binary(Parser *p, QNStmt *s) {
     const QNToken *output = expect(p, TOK_IDENT, "output variable");
     if (!output || !expect(p, TOK_EQUAL, "'='")) return false;
@@ -967,7 +1067,9 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out,
         s.line = start->line;
         s.column = start->column;
 
-        if (match(&p, TOK_QBIT) || match(&p, TOK_QREG)) {
+        if (step9_is_tensor_declaration(&p)) {
+            if (!parse_step9_tensor_declaration(&p, &s)) goto fail;
+        } else if (match(&p, TOK_QBIT) || match(&p, TOK_QREG)) {
             bool single = prev(&p)->kind == TOK_QBIT;
             s.kind = STMT_QREG;
             const QNToken *name = expect(&p, TOK_IDENT, "register name");

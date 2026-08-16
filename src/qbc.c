@@ -1326,6 +1326,7 @@ QNStatus qn_compile(const QNProgram *program,
                     const uint8_t source_digest[32],
                     QNBytecode *out,
                     QNDiagnostic *diag) {
+
     QNQIRProgram qir;
     memset(&qir, 0, sizeof(qir));
 

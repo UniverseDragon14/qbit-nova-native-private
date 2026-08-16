@@ -42,8 +42,14 @@ typedef enum {
     STMT_U32_SET_DIV,
     STMT_REPEAT,
     STMT_CALL,
-    STMT_RETURN
+    STMT_RETURN,
+    STMT_TENSOR_DECL
 } QNStmtKind;
+
+typedef enum {
+    QN_TENSOR_ELEMENT_F32 = 1,
+    QN_TENSOR_ELEMENT_I8 = 2
+} QNTensorElementType;
 
 typedef struct QNStmt QNStmt;
 
@@ -67,6 +73,11 @@ struct QNStmt {
         struct { uint64_t value; } number;
         struct { char output[QN_NAME_CAP]; } vector_add_u32;
         struct { char name[QN_NAME_CAP]; uint32_t value; } u32_let;
+        struct {
+            char name[QN_NAME_CAP];
+            QNTensorElementType element_type;
+            uint32_t element_count;
+        } tensor_decl;
         struct {
             char output[QN_NAME_CAP];
             char left[QN_NAME_CAP];
