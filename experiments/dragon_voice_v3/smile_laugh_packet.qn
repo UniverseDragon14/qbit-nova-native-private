@@ -1,0 +1,30 @@
+# Dragon Voice V3 — Smile/Laugh control proof
+# QBIT NOVA Native only. No Python/JS dependency.
+#
+# Fixed output order (u32 each):
+#   1 protocol_version
+#   2 emotion_id       1 = warm/playful
+#   3 smile_amount     0..100
+#   4 laugh_amount     0..100
+#   5 warmth           0..100
+#   6 energy           0..100
+#   7 pace             0..100 (50 = neutral)
+#
+# This is intentionally a tiny deterministic control packet.
+# The downstream Dragon Voice renderer owns waveform generation.
+
+let protocol_version: u32 = 3
+let emotion_id: u32 = 1
+let smile_amount: u32 = 82
+let laugh_amount: u32 = 38
+let warmth: u32 = 88
+let energy: u32 = 64
+let pace: u32 = 54
+
+emit protocol_version
+emit emotion_id
+emit smile_amount
+emit laugh_amount
+emit warmth
+emit energy
+emit pace
