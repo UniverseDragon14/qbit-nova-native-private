@@ -1,0 +1,4 @@
+# V10 Step2B native-data QBC layout proof source.
+let gain: f32 = 0.75
+let greeting: string = "Hi bro 😊"
+let packet: bytes = b"QBIT\x00NOVA"
