@@ -11,12 +11,13 @@ CPPFLAGS += $(OPENSSL_CFLAGS)
 LDLIBS ?= -lm
 LDLIBS += $(OPENSSL_LIBS) -ldl
 
-SRC := src/main.c src/util.c src/sha256.c src/lexer.c src/parser.c \
-       src/qir.c src/guard.c src/approval.c src/ed25519.c \
-       src/signed_approval.c src/trust_store.c src/trust_store_file.c \
-       src/replay_ledger.c src/revocation_store.c \
+SRC := src/main.c src/v10_cli_router.c src/util.c src/sha256.c \
+       src/lexer.c src/parser.c src/qir.c src/guard.c src/approval.c \
+       src/ed25519.c src/signed_approval.c src/trust_store.c \
+       src/trust_store_file.c src/replay_ledger.c src/revocation_store.c \
        src/gpu_adapter.c src/gpu_compute.c src/gpu_routing.c \
-       src/qbc.c src/vm.c
+       src/qbc.c src/vm.c src/media_v10.c src/v10_data.c \
+       src/qbc_v10_data.c
 OBJ := $(SRC:src/%.c=build/%.o)
 BIN := build/qnova
 TRUST_TEST := build/test_trust_store
@@ -46,6 +47,12 @@ check-deps:
 
 build:
 	mkdir -p build
+
+# Step2C keeps the frozen legacy CLI implementation intact and renames only
+# its entry symbol. src/v10_cli_router.c owns main() and delegates every
+# non-V10 command to qn_legacy_main().
+build/main.o: src/main.c | build
+	$(CC) $(CPPFLAGS) $(CFLAGS) -Dmain=qn_legacy_main -c $< -o $@
 
 build/%.o: src/%.c | build
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -88,7 +95,6 @@ $(GPU_ADAPTER_TEST): tests/test_gpu_adapter.c \
 		tests/test_gpu_adapter.c \
 		src/gpu_adapter.c src/util.c \
 		-o $@ $(LDLIBS)
-
 
 $(GPU_COMPUTE_TEST): tests/test_gpu_compute.c \
                      src/gpu_compute.c src/gpu_adapter.c \
@@ -182,6 +188,7 @@ test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
 	bash tests/run_tests.sh
 	bash tests/test_runtime_inputs.sh
 	bash tests/test_function_control_flow.sh
+	bash tests/test_v10_step2c_cli.sh
 
 install: check-deps $(BIN)
 	install -m 0755 $(BIN) $(DESTDIR)/usr/local/bin/qnova

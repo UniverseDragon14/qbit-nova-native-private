@@ -2,6 +2,66 @@
 
 Native C17 language foundation by Universal Dragon Aslam.
 
+## V10 native data + voice development checkpoint
+
+V10 development is happening on isolated development branches while the frozen
+Stage7 Step9 checkpoint remains untouched.
+
+Current V10 data path:
+
+```text
+.qn source
+  -> V10 native-data router
+  -> bounded f32 / UTF-8 string / bytes parser
+  -> typed native-data AST
+  -> Step1 semantic validators
+  -> typed QIR + bounded constant pool
+  -> canonical QBC v10 data-only encoder
+```
+
+Step 2C connects the previously isolated V10 frontend and QBC v10 layout to the
+normal `qnova check`, `qnova qir`, and `qnova build` commands. Legacy programs
+continue through the existing compiler entrypoint unchanged.
+
+Example:
+
+```qbit
+let gain: f32 = 0.75
+let greeting: string = "Hi bro 😊"
+let packet: bytes = b"QBIT\x00NOVA"
+```
+
+Build it with the normal CLI:
+
+```bash
+./build/qnova check examples/v10_native_data_qbc10.qn
+./build/qnova qir examples/v10_native_data_qbc10.qn
+./build/qnova build examples/v10_native_data_qbc10.qn \
+  -o build/v10-native-data.qbc
+```
+
+The produced file uses the locked QBC v10 data layout: version `10`, a
+128-byte canonical header, 80-byte typed value records, and a bounded
+constant pool for UTF-8 strings and bytes.
+
+### V10 execution boundary
+
+QBC v10 **data compilation is enabled**, but QVM execution of `f32`, `string`,
+and `bytes` is not implemented yet. `qnova run` on V10 native-data source and
+`qnova exec` on a QBC v10 data file therefore fail closed with explicit V10
+runtime diagnostics instead of falling through to the legacy VM.
+
+The voice/media ABI foundation exists separately for bounded `f32`, UTF-8
+strings, bytes, typed audio buffers, and typed voice requests. Audio playback,
+TTS synthesis, microphone capture, and Pi5 runtime proof remain later gates.
+
+### Frozen compatibility boundary
+
+- Frozen Stage7 Step9: `f13ccf4e279a792261a5f2cabbd6cd545cc86f0a`
+- Legacy QBC v8/v9 compiler path remains available for legacy source.
+- QBC v10 is a development format, not a released/frozen runtime ABI yet.
+- No release/final freeze is implied by the V10 development branches.
+
 ## Stage 5
 
 v0.5 adds OpenSSL-backed Ed25519 public-key approvals while preserving the
@@ -117,14 +177,20 @@ truncation, unknown capability IDs and oversized contexts.
 
 A valid signature cannot override a blocked capability.
 
-## Honest limitations
+## Stage 5 historical limitations
 
-- No replay ledger is implemented in v0.5.
-- No revocation store is implemented in v0.5.
-- The verifier trusts the public-key file explicitly supplied by the operator.
-- Raw key files are used; encrypted PKCS#8 support is not implemented.
+At the Stage 5 checkpoint specifically:
+
+- No replay ledger was implemented yet.
+- No revocation store was implemented yet.
+- The verifier trusted the public-key file explicitly supplied by the operator.
+- Raw key files were used; encrypted PKCS#8 support was not implemented.
+
+Current broader project boundaries still include:
+
 - This remains a software virtual QCPU, not physical quantum hardware.
-- ARM NEON tensor work is deferred to a later performance stage.
+- V10 native-data QVM execution is not implemented yet.
+- V10 audio playback, TTS synthesis, and microphone capture are not implemented yet.
 
 ## Project separation
 
