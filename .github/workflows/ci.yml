@@ -5,6 +5,7 @@ on:
     branches:
       - "main"
       - "dev/v10-native-data-step2d-regression"
+      - "dev/v10-native-data-step2d-conformance-repair"
   pull_request:
     branches: ["main"]
   workflow_dispatch:

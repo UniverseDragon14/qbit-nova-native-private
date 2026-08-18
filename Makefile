@@ -188,6 +188,8 @@ test: check-deps $(BIN) $(TRUST_TEST) $(TRUST_FILE_TEST) \
 	bash tests/run_tests.sh
 	bash tests/test_runtime_inputs.sh
 	bash tests/test_function_control_flow.sh
+	bash tests/test_v10_data_frontend.sh
+	bash tests/test_qbc_v10_data_layout.sh
 	bash tests/test_v10_step2c_cli.sh
 
 install: check-deps $(BIN)

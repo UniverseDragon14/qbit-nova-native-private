@@ -44,6 +44,10 @@ static uint64_t get64(const uint8_t *p) {
     return v;
 }
 
+static uint32_t canonical_f32_bits(uint32_t bits) {
+    return bits == UINT32_C(0x80000000) ? 0u : bits;
+}
+
 static size_t bounded_name_length(const char name[QN_NAME_CAP]) {
     const char *nul = (const char *)memchr(name, '\0', QN_NAME_CAP);
     return nul ? (size_t)(nul - name) : QN_NAME_CAP;
@@ -107,7 +111,7 @@ static QNStatus validate_qir(const QNV10DataQIRProgram *qir,
         QNStatus status;
         if (value->kind == QN_VALUE_STRING) {
             QNStringView view = {(const char *)bytes, value->byte_length};
-            status = qn_string_validate(view, QN_MAX_STRING_BYTES, false, diag);
+            status = qn_string_validate(view, QN_MAX_STRING_BYTES, true, diag);
         } else {
             QNBytesView view = {bytes, value->byte_length};
             status = qn_bytes_validate(view, QN_MAX_BYTES_BUFFER, diag);
@@ -191,7 +195,10 @@ QNStatus qn_qbc_v10_data_encode(const QNV10DataQIRProgram *qir,
         put16(data + at + 66u, 0u);
         put32(data + at + 68u, value->constant_offset);
         put32(data + at + 72u, value->byte_length);
-        put32(data + at + 76u, value->f32_bits);
+        put32(data + at + 76u,
+              value->kind == QN_VALUE_F32
+                  ? canonical_f32_bits(value->f32_bits)
+                  : value->f32_bits);
         at += QN_QBC_V10_VALUE_RECORD_SIZE;
     }
 
@@ -304,7 +311,8 @@ QNStatus qn_qbc_v10_data_decode(const uint8_t *data,
         }
 
         if (value->kind == QN_VALUE_F32) {
-            if (value->constant_offset != UINT32_MAX || value->byte_length != 4u) {
+            if (value->constant_offset != UINT32_MAX || value->byte_length != 4u ||
+                value->f32_bits == UINT32_C(0x80000000)) {
                 diag_set(diag, "QN-E7825", "invalid canonical V10 f32 record");
                 free(out->constant_bytes);
                 memset(out, 0, sizeof(*out));
@@ -330,7 +338,7 @@ QNStatus qn_qbc_v10_data_decode(const uint8_t *data,
             QNStatus status;
             if (value->kind == QN_VALUE_STRING) {
                 QNStringView view = {(const char *)bytes, value->byte_length};
-                status = qn_string_validate(view, QN_MAX_STRING_BYTES, false, diag);
+                status = qn_string_validate(view, QN_MAX_STRING_BYTES, true, diag);
             } else {
                 QNBytesView view = {bytes, value->byte_length};
                 status = qn_bytes_validate(view, QN_MAX_BYTES_BUFFER, diag);

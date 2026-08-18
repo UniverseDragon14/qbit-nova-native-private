@@ -1,4 +1,5 @@
 #include "qn_v10_data.h"
+
 #include <assert.h>
 #include <math.h>
 #include <stdarg.h>
@@ -54,10 +55,26 @@ int main(void) {
     assert(qir.value_count == 4u);
     assert(qir.requires_qbc_v10);
     assert(qir.values[0].kind == QN_VALUE_F32);
+    assert(qir.values[0].constant_offset == UINT32_MAX);
+    assert(qir.values[0].byte_length == 4u);
     assert(qir.values[1].kind == QN_VALUE_STRING);
     assert(qir.values[3].kind == QN_VALUE_BYTES);
     assert(qn_v10_data_qbc_guard(&qir, &diag) == QN_ERR_QBC);
     assert(strcmp(diag.code, "QN-E7818") == 0);
+    qn_v10_data_qir_free(&qir);
+    qn_v10_data_program_free(&ast);
+
+    const char *case_sensitive =
+        "let Dragon: f32 = 1.0\n"
+        "let dragon: f32 = 2.0\n";
+    memset(&diag, 0, sizeof(diag));
+    assert(qn_v10_data_parse_source(case_sensitive, &ast, &diag) == QN_OK);
+    assert(ast.count == 2u);
+    assert(strcmp(ast.declarations[0].name, "Dragon") == 0);
+    assert(strcmp(ast.declarations[1].name, "dragon") == 0);
+    assert(qn_v10_data_qir_build(&ast, &qir, &diag) == QN_OK);
+    assert(strcmp(qir.values[0].name, "Dragon") == 0);
+    assert(strcmp(qir.values[1].name, "dragon") == 0);
     qn_v10_data_qir_free(&qir);
     qn_v10_data_program_free(&ast);
 
@@ -67,6 +84,23 @@ int main(void) {
     memset(&diag, 0, sizeof(diag));
     assert(qn_v10_data_parse_source(duplicate, &ast, &diag) == QN_ERR_SEMANTIC);
     assert(strcmp(diag.code, "QN-E7813") == 0);
+
+    memset(&diag, 0, sizeof(diag));
+    assert(qn_v10_data_parse_source("Let x: f32 = 1.0\n", &ast, &diag) == QN_ERR_PARSE);
+    assert(strcmp(diag.code, "QN-E7812") == 0);
+
+    memset(&diag, 0, sizeof(diag));
+    assert(qn_v10_data_parse_source("let x: F32 = 1.0\n", &ast, &diag) == QN_ERR_PARSE);
+    assert(strcmp(diag.code, "QN-E7813") == 0);
+
+    memset(&diag, 0, sizeof(diag));
+    assert(qn_v10_data_parse_source("let zero: f32 = -0.0\n", &ast, &diag) == QN_OK);
+    assert(qn_v10_data_qir_build(&ast, &qir, &diag) == QN_OK);
+    assert(qir.values[0].constant_offset == UINT32_MAX);
+    assert(qir.values[0].byte_length == 4u);
+    assert(qir.values[0].f32_bits == 0u);
+    qn_v10_data_qir_free(&qir);
+    qn_v10_data_program_free(&ast);
 
     const char malformed_utf8[] = {
         'l','e','t',' ','x',':',' ','s','t','r','i','n','g',' ','=',' ','"',
@@ -86,9 +120,14 @@ int main(void) {
 
     puts("QBIT_NOVA_V10_NATIVE_DATA_STEP2A=PASS");
     puts("V10_SOURCE_LEXER=PASS");
+    puts("V10_ASCII_LEXICAL_CLASSIFICATION=PASS");
+    puts("V10_CASE_SENSITIVE_IDENTIFIERS=PASS");
+    puts("V10_LOWERCASE_KEYWORDS_TYPES=PASS");
     puts("V10_TYPED_AST=PASS");
     puts("V10_SEMANTIC_VALIDATION=PASS");
     puts("V10_TYPED_QIR=PASS");
+    puts("V10_F32_QIR_CANONICAL_RECORD=PASS");
+    puts("V10_F32_NEGATIVE_ZERO_CANONICAL=PASS");
     puts("V10_QBC_LEGACY_FAIL_CLOSED=PASS");
     puts("V10_F32_LITERAL=PASS");
     puts("V10_UTF8_STRING_LITERAL=PASS");
