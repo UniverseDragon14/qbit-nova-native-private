@@ -2,9 +2,12 @@ name: QBIT NOVA Native CI
 
 on:
   push:
-    branches: ["main"]
+    branches:
+      - "main"
+      - "dev/v10-native-data-step2d-regression"
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 permissions:
   contents: read
