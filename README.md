@@ -1,4 +1,18 @@
-# QBIT NOVA Native v0.5
+# QBIT NOVA Native — V10 Data Step 2C
+
+> Experimental V10 checkpoint; not a released or frozen runtime ABI.
+
+## Branch checkpoint
+
+- Branch: `dev/v10-native-data-step2c-main-integration`
+- Inspected code tip: `361930e54d0e`
+- Focus: Routes V10 native-data source through the normal check/QIR/build CLI and emits QBC v10; V10 data execution still fails closed.
+- Full repository branch inventory: [audited branch map](https://github.com/UniverseDragon14/qbit-nova-native-private/blob/stage7-step9-native-tensor-memory/BRANCHES.md)
+
+## Truth boundary
+
+`boundary=software_virtual_qcpu,native_bounded_compute`  
+`physical_qpu=false`
 
 Native C17 language foundation by Universal Dragon Aslam.
 
