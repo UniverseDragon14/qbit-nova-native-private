@@ -1,6 +1,20 @@
-# QBIT NOVA Native v0.5
+# QBIT NOVA Native — V10 Guardian Security Foundation
 
 Native C17 language foundation by Universal Dragon Aslam.
+
+> Status: **design/API foundation on an experimental V10 branch**
+
+## Guardian branch scope
+
+This branch adds [the Guardian design contract](docs/V10_GUARDIAN_SECURITY_FOUNDATION_DESIGN.md) and [the C ABI header](include/qn_security_v10.h) for passive observation, authorized scan/audit/fuzz/validation, and explicitly approved isolated-lab testing.
+
+It is contract-first work: the header declares capability, request, decision and validation interfaces, but this checkpoint does **not** add a new executable V10 opcode, complete Guardian runtime implementation, covert tracking, credential theft, persistence or destructive action. Unknown/unclassified requests are designed to fail closed.
+
+- Inspected implementation tip: `943c06a01b3c`
+- [All 21 branches](BRANCHES.md)
+- [Pi5 GHZ3 200,000-shot software proof](docs/proofs/PI5_GHZ3_200K_20260825.md)
+
+The Pi5 proof validates the inherited GHZ/QBC software execution path. It does not prove that the new Guardian contracts are fully implemented or deployed.
 
 ## V10 native data + voice development checkpoint
 
