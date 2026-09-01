@@ -1,4 +1,20 @@
-# QBIT NOVA Native v0.5
+# QBIT NOVA Native — V10 Data Step 2A
+
+> Experimental checkpoint branch; not a production release.
+
+## Branch checkpoint
+
+- Branch: `dev/v10-native-data-step2`
+- Inspected code tip: `92f696674e4a`
+- Focus: Adds the gated f32/string/bytes frontend, validators and focused tests.
+- Full repository branch inventory: [audited branch map](https://github.com/UniverseDragon14/qbit-nova-native-private/blob/stage7-step9-native-tensor-memory/BRANCHES.md)
+
+## Truth boundary
+
+`boundary=software_virtual_qcpu,native_bounded_compute`  
+`physical_qpu=false`
+
+The Raspberry Pi 5 is the classical host. CPU/Vulkan execution, qbits and state-vector behavior are software paths.
 
 Native C17 language foundation by Universal Dragon Aslam.
 
