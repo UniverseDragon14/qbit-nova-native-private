@@ -1,4 +1,18 @@
-# QBIT NOVA Native v0.5
+# QBIT NOVA Native — V10 Data Step 2D Regression
+
+> Experimental V10 checkpoint; not a released or frozen runtime ABI.
+
+## Branch checkpoint
+
+- Branch: `dev/v10-native-data-step2d-regression`
+- Inspected code tip: `082a02ccdf92`
+- Focus: Enables full CI regression for the V10 development line.
+- Full repository branch inventory: [audited branch map](https://github.com/UniverseDragon14/qbit-nova-native-private/blob/stage7-step9-native-tensor-memory/BRANCHES.md)
+
+## Truth boundary
+
+`boundary=software_virtual_qcpu,native_bounded_compute`  
+`physical_qpu=false`
 
 Native C17 language foundation by Universal Dragon Aslam.
 
