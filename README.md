@@ -1,4 +1,20 @@
-# QBIT NOVA Native v0.5
+# QBIT NOVA Native — V10 Audio/Voice ABI Step 1
+
+> Experimental checkpoint branch; not a production release.
+
+## Branch checkpoint
+
+- Branch: `dev/v10-native-audio-voice-step1`
+- Inspected code tip: `0f7a7ad194e6`
+- Focus: Bounded media/voice C ABI, typed buffers/requests and focused tests. Playback, TTS and microphone capture are not implemented here.
+- Full repository branch inventory: [audited branch map](https://github.com/UniverseDragon14/qbit-nova-native-private/blob/stage7-step9-native-tensor-memory/BRANCHES.md)
+
+## Truth boundary
+
+`boundary=software_virtual_qcpu,native_bounded_compute`  
+`physical_qpu=false`
+
+The Raspberry Pi 5 is the classical host. CPU/Vulkan execution, qbits and state-vector behavior are software paths.
 
 Native C17 language foundation by Universal Dragon Aslam.
 
