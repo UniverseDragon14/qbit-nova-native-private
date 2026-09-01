@@ -2,7 +2,7 @@
 
 **A native C17 programming language and deterministic QBC/QVM runtime with a software virtual QCPU and approval-first execution security — built on a Raspberry Pi 5.**
 
-> Full development archive — all stages, all branches, all proofs.
+> Development repository — 21 inspected branches spanning Stage 5 through experimental V10 work.
 > Created by Universal Dragon Aslam
 
 ## Truth boundary
@@ -14,11 +14,11 @@ python_runtime_dependency=false
 release_class=research_preview
 ```
 
-QBIT NOVA does not claim that a Raspberry Pi 5 or ordinary software becomes a physical quantum computer. It implements quantum-state simulation and a secure native execution architecture, and every claim in this repository is backed by a hash or a reproducible run.
+QBIT NOVA does not claim that a Raspberry Pi 5 or ordinary software becomes a physical quantum computer. It implements quantum-state simulation and an approval-first native execution architecture. The verified claims listed below are tied to specific hashes or reproducible runs; planning/design documents are not runtime proof.
 
 ## How QBIT NOVA works
 
-A `.qn` source file travels one deterministic pipeline. Nothing reaches the machine unless it passes the guard and carries a valid signed approval.
+A `.qn` source file travels a deterministic compiler/runtime pipeline. The guard allows safe capabilities, requires valid approval for approval-gated capabilities, and rejects blocked capabilities; a signature cannot override a blocked action.
 
 ```text
 QBIT NOVA source (.qn)
@@ -36,7 +36,7 @@ QBIT NOVA source (.qn)
   → evidence receipt
 ```
 
-Two execution boundaries are verified to agree: source-level simulation and QBC bytecode execution produce identical results for the same program.
+For the recorded GHZ3 case below, source-level simulation and QBC bytecode execution produced identical results with the same seed and parameters.
 
 ## Verified proofs
 
@@ -68,7 +68,7 @@ Valid Ed25519 approvals pass. Replay, wrong-key, expired, tampered, and blocked-
 
 ## Development timeline
 
-Every stage is a real Git branch in this repository. Nothing is retro-written.
+The implementation checkpoints are preserved as Git branches; the 2026-09-01 documentation audit added branch-specific README commits without changing their inspected code tips.
 
 ```text
 Stage 5    — Ed25519 authenticated approvals
