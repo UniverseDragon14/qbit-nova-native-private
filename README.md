@@ -126,6 +126,10 @@ make test
 
 Strict flags: `-std=c17 -O2 -Wall -Wextra -Wpedantic -Werror`
 
+## Publication safety
+
+The [publication security review](docs/PUBLICATION_SECURITY_REVIEW_20260901.md) accounted for 21 branches and 238 reachable/baseline text paths with no recognized secret signatures. Repository visibility remains **HOLD** until deleted historical blobs and binary/archive history receive a complete mirror-based scan.
+
 ## Project status
 
 Active research preview. Not yet a production security product, not a physical quantum computer, not the final QBIT NOVA release.
