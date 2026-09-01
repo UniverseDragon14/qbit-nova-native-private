@@ -14,6 +14,8 @@ physical_qpu=false
 
 The Raspberry Pi 5 is the classical host. CPU/Vulkan paths are simulation or bounded classical compute; they do not turn the Pi into a physical quantum computer.
 
+All **21 branches** were inspected on 2026-09-01. See [BRANCHES.md](BRANCHES.md) for the complete Stage5 → Stage7 → V10 map, duplicate pointers, public-repository gap, and visibility warning.
+
 ## Current command surface
 
 - lex, check, and typed QIR inspection;
@@ -57,7 +59,7 @@ The front end can recognize native tensor programs, but some tensor execution pa
 
 ## Verification boundary
 
-The separately recorded Pi audit observed deterministic source/QBC GHZ agreement at 200,000 shots with only 000 and 111 outcomes. That is reproducible software-runtime evidence, not physical-QPU evidence.
+The [Pi5 GHZ3 200,000-shot evidence](docs/proofs/PI5_GHZ3_200K_20260825.md) records deterministic source/QBC histogram agreement: 100,198 × `000`, 99,802 × `111`, zero invalid states. The repository source SHA-256 matches the runtime-reported source hash exactly. This is reproducible software-runtime evidence, not physical-QPU evidence; the raw JSON receipts were not imported into this update.
 
 GPU/Vulkan success is environment-dependent. The test suite distinguishes explicit CPU use, eligible Vulkan paths, and fallback/rejection behavior.
 
