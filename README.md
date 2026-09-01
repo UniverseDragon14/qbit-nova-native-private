@@ -1,4 +1,20 @@
-# QBIT NOVA Native v0.5
+# QBIT NOVA Native — Stage 7 Typed Core
+
+> Experimental checkpoint branch; not a production release.
+
+## Branch checkpoint
+
+- Branch: `stage7-native-language-core`
+- Inspected code tip: `d64acd4e5641`
+- Focus: Adds typed u32 scalar language/runtime support on top of the QBC/QVM foundation.
+- Full repository branch inventory: [audited branch map](https://github.com/UniverseDragon14/qbit-nova-native-private/blob/stage7-step9-native-tensor-memory/BRANCHES.md)
+
+## Truth boundary
+
+`boundary=software_virtual_qcpu,native_bounded_compute`  
+`physical_qpu=false`
+
+The Raspberry Pi 5 is the classical host. CPU/Vulkan execution, qbits and state-vector behavior are software paths.
 
 Native C17 language foundation by Universal Dragon Aslam.
 
