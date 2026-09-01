@@ -1,4 +1,20 @@
-# QBIT NOVA Native v0.5
+# QBIT NOVA Native — Stage 6 Pi5 GPU Adapter
+
+> Experimental checkpoint branch; not a production release.
+
+## Branch checkpoint
+
+- Branch: `stage6-pi5-gpu-adapter`
+- Inspected code tip: `8d7c7c663fe5`
+- Focus: Adds CPU/Vulkan routing and a bounded native V3D compute pipeline. GPU work is classical compute, not physical quantum execution.
+- Full repository branch inventory: [audited branch map](https://github.com/UniverseDragon14/qbit-nova-native-private/blob/stage7-step9-native-tensor-memory/BRANCHES.md)
+
+## Truth boundary
+
+`boundary=software_virtual_qcpu,native_bounded_compute`  
+`physical_qpu=false`
+
+The Raspberry Pi 5 is the classical host. CPU/Vulkan execution, qbits and state-vector behavior are software paths.
 
 Native C17 language foundation by Universal Dragon Aslam.
 
