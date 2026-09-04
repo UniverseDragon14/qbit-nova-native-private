@@ -307,6 +307,77 @@ static bool parse_step9_tensor_declaration(Parser *p, QNStmt *s) {
     return true;
 }
 
+/*
+ * Stage8 device words stay contextual so existing programs may continue to
+ * use names such as "device", "write", "high", and "low" as identifiers.
+ */
+static bool stage8_is_word(const QNToken *token, const char *word) {
+    return token && token->kind == TOK_IDENT &&
+           strcmp(token->text, word) == 0;
+}
+
+static bool stage8_is_device_declaration(Parser *p) {
+    if (!p || p->at + 5u >= p->tokens->count) return false;
+    return stage8_is_word(&p->tokens->items[p->at], "device") &&
+           p->tokens->items[p->at + 1u].kind == TOK_IDENT &&
+           stage8_is_word(&p->tokens->items[p->at + 2u], "gpio") &&
+           stage8_is_word(&p->tokens->items[p->at + 3u], "pin") &&
+           p->tokens->items[p->at + 4u].kind == TOK_EQUAL &&
+           p->tokens->items[p->at + 5u].kind == TOK_INT;
+}
+
+static bool stage8_is_device_write(Parser *p) {
+    if (!p || p->at + 2u >= p->tokens->count) return false;
+    const QNToken *value = &p->tokens->items[p->at + 2u];
+    return stage8_is_word(&p->tokens->items[p->at], "write") &&
+           p->tokens->items[p->at + 1u].kind == TOK_IDENT &&
+           (stage8_is_word(value, "high") || stage8_is_word(value, "low"));
+}
+
+static bool parse_stage8_device_declaration(Parser *p, QNStmt *s) {
+    const QNToken *keyword = expect(p, TOK_IDENT, "device");
+    const QNToken *name = expect(p, TOK_IDENT, "device name");
+    const QNToken *gpio = expect(p, TOK_IDENT, "gpio");
+    const QNToken *pin = expect(p, TOK_IDENT, "pin");
+    if (!keyword || !name || !gpio || !pin ||
+        strcmp(keyword->text, "device") != 0 ||
+        strcmp(gpio->text, "gpio") != 0 || strcmp(pin->text, "pin") != 0 ||
+        !expect(p, TOK_EQUAL, "'='")) {
+        return false;
+    }
+    const QNToken *line = expect(p, TOK_INT, "GPIO line offset");
+    if (!line) return false;
+    if (line->int_value > QN_MAX_GPIO_LINE_OFFSET) {
+        qn_diag_set_code(p->diag, "QN-E7801", line->line, line->column,
+                         "GPIO line offset must be 0..%u",
+                         QN_MAX_GPIO_LINE_OFFSET);
+        return false;
+    }
+    s->kind = STMT_DEVICE_GPIO;
+    snprintf(s->as.device_gpio.name, sizeof(s->as.device_gpio.name),
+             "%s", name->text);
+    s->as.device_gpio.line_offset = (uint32_t)line->int_value;
+    return true;
+}
+
+static bool parse_stage8_device_write(Parser *p, QNStmt *s) {
+    const QNToken *keyword = expect(p, TOK_IDENT, "write");
+    const QNToken *name = expect(p, TOK_IDENT, "device name");
+    const QNToken *value = expect(p, TOK_IDENT, "high or low");
+    if (!keyword || !name || !value || strcmp(keyword->text, "write") != 0)
+        return false;
+    if (strcmp(value->text, "high") != 0 && strcmp(value->text, "low") != 0) {
+        qn_diag_set_code(p->diag, "QN-E7802", value->line, value->column,
+                         "GPIO write value must be high or low");
+        return false;
+    }
+    s->kind = STMT_DEVICE_WRITE;
+    snprintf(s->as.device_write.name, sizeof(s->as.device_write.name),
+             "%s", name->text);
+    s->as.device_write.high = strcmp(value->text, "high") == 0;
+    return true;
+}
+
 static bool parse_scalar_binary(Parser *p, QNStmt *s) {
     const QNToken *output = expect(p, TOK_IDENT, "output variable");
     if (!output || !expect(p, TOK_EQUAL, "'='")) return false;
@@ -1067,7 +1138,11 @@ QNStatus qn_parse(const QNTokenList *tokens, QNProgram *out,
         s.line = start->line;
         s.column = start->column;
 
-        if (step9_is_tensor_declaration(&p)) {
+        if (stage8_is_device_declaration(&p)) {
+            if (!parse_stage8_device_declaration(&p, &s)) goto fail;
+        } else if (stage8_is_device_write(&p)) {
+            if (!parse_stage8_device_write(&p, &s)) goto fail;
+        } else if (step9_is_tensor_declaration(&p)) {
             if (!parse_step9_tensor_declaration(&p, &s)) goto fail;
         } else if (match(&p, TOK_QBIT) || match(&p, TOK_QREG)) {
             bool single = prev(&p)->kind == TOK_QBIT;

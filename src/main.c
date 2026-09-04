@@ -52,6 +52,8 @@ static void usage(FILE *f) {
         "            [--revocation-store-file STORE]\n"
         "            [--approval-file token.qna --approval-key-file KEY]\n"
         "            [--backend cpu|auto|vulkan]\n"
+        "            [--device-backend deny|mock|linux-gpio]\n"
+        "            [--gpiochip /dev/gpiochipN] [--device-hold-ms 0..5000]\n"
         "            [--input name=decimal-u32]...\n"
         "            [--now UNIX] [--receipt file.json]\n"
         "  qnova exec <file.qbc> [same execution options]\n"
@@ -138,6 +140,9 @@ typedef struct {
     bool has_approval_now;
     QNGpuBackendRequest backend;
     bool backend_explicit;
+    QNDeviceOptions device;
+    bool device_backend_explicit;
+    bool device_hold_explicit;
     const char *input_bindings[QN_MAX_RUNTIME_INPUTS];
     uint16_t input_binding_count;
     QNGuardPolicy policy;
@@ -149,6 +154,7 @@ static void parse_run_opts(int argc,
                            RunOptions *options) {
     memset(options, 0, sizeof(*options));
     options->backend = QN_GPU_BACKEND_CPU;
+    qn_device_options_safe(&options->device);
     qn_guard_policy_safe(&options->policy);
 
     for(int i=from;i<argc;i++) {
@@ -185,6 +191,23 @@ static void parse_run_opts(int argc,
                 exit(QN_ERR_PARSE);
             }
             options->backend_explicit=true;
+        } else if(!strcmp(argv[i],"--device-backend") && i+1<argc) {
+            if(!qn_device_backend_parse(argv[++i],&options->device.backend)) {
+                fprintf(stderr,"unknown device backend: %s\n",argv[i]);
+                exit(QN_ERR_PARSE);
+            }
+            options->device_backend_explicit=true;
+        } else if(!strcmp(argv[i],"--gpiochip") && i+1<argc) {
+            options->device.gpiochip_path=argv[++i];
+        } else if(!strcmp(argv[i],"--device-hold-ms") && i+1<argc) {
+            uint64_t hold=parse_u64(argv[++i],"device hold");
+            if(hold>QN_MAX_DEVICE_HOLD_MS) {
+                fprintf(stderr,"device hold must be 0..%u ms\n",
+                        QN_MAX_DEVICE_HOLD_MS);
+                exit(QN_ERR_LIMIT);
+            }
+            options->device.hold_ms=(uint32_t)hold;
+            options->device_hold_explicit=true;
         } else if(!strcmp(argv[i],"--input") && i+1<argc) {
             if(options->input_binding_count >= QN_MAX_RUNTIME_INPUTS) {
                 fprintf(stderr,"too many --input bindings (max %u)\n",
@@ -686,6 +709,9 @@ static QNStatus preflight_before_replay_consume(
     bool shots_explicit,
     bool seed_explicit,
     const QNGuardPolicy *policy,
+    const QNDeviceOptions *device_options,
+    bool device_backend_explicit,
+    bool device_hold_explicit,
     QNDiagnostic *diag
 ) {
     QNStatus status = qn_guard_enforce(
@@ -696,6 +722,29 @@ static QNStatus preflight_before_replay_consume(
 
     if (status != QN_OK) {
         return status;
+    }
+
+    if (qn_qbc_is_gpio_output_program(bc)) {
+        if (shots_explicit || seed_explicit) {
+            qn_diag_set_code(diag, "QN-E7818", 0, 0,
+                             "GPIO programs do not accept --shots or --seed");
+            return QN_ERR_PARSE;
+        }
+        if (device_options &&
+            device_options->backend == QN_DEVICE_BACKEND_LINUX_GPIO &&
+            strcmp(policy->approval_scheme, "ed25519") != 0) {
+            qn_diag_set_code(diag, "QN-E7820", 0, 0,
+                             "physical GPIO requires Ed25519 approval");
+            return QN_ERR_RUNTIME;
+        }
+        return qn_device_options_validate(device_options, true, diag);
+    }
+
+    if (device_backend_explicit || device_hold_explicit ||
+        (device_options && device_options->gpiochip_path != NULL)) {
+        qn_diag_set_code(diag, "QN-E7819", 0, 0,
+                         "device options are accepted only by GPIO programs");
+        return QN_ERR_PARSE;
     }
 
     if (qn_qbc_is_bounded_u32_vector_add(bc) ||
@@ -753,7 +802,7 @@ int main(int argc,char **argv) {
     if(argc<2){ usage(stderr); return 1; }
     if(!strcmp(argv[1],"version")){
         printf("QBIT NOVA Native %d.%d.%d\n",QN_VERSION_MAJOR,QN_VERSION_MINOR,QN_VERSION_PATCH);
-        printf("runtime=C17\npython_dependency=false\nboundary=software_virtual_qcpu,native_bounded_compute\n");
+        printf("runtime=C17\npython_dependency=false\nboundary=software_virtual_qcpu,native_bounded_compute,bounded_gpio_output\n");
         return 0;
     }
     if(argc<3){ usage(stderr); return 1; }
@@ -1524,10 +1573,11 @@ int main(int argc,char **argv) {
          *
          * Tensor declarations are now valid frontend/QIR syntax.
          *
-         * They MUST NOT be serialized into frozen QBC v1-v9.
+         * They MUST NOT be serialized into the GPIO-only QBC v10 contract or
+         * any frozen QBC v1-v9 contract.
          *
-         * QBC v10 will be enabled only after the complete native
-         * data/media/module/capability ABI release gate exists.
+         * Tensor QBC serialization will be enabled only after the complete
+         * native data/media/module/capability ABI release gate exists.
          *
          * This guard deliberately lives in BUILD, immediately
          * before QBC serialization.
@@ -1551,9 +1601,8 @@ int main(int argc,char **argv) {
                     "QN-E7710",
                     stmt->line,
                     stmt->column,
-                    "native tensor program is frontend-valid but "
-                    "QBC v10 serialization is intentionally not "
-                    "released yet"
+                    "native tensor program is frontend-valid but tensor "
+                    "QBC serialization is intentionally not released yet"
                 );
 
                 qn_program_free(&program);
@@ -1685,6 +1734,9 @@ int main(int argc,char **argv) {
             options.shots_explicit,
             options.seed_explicit,
             &options.policy,
+            &options.device,
+            options.device_backend_explicit,
+            options.device_hold_explicit,
             &diag
         );
 
@@ -1736,13 +1788,14 @@ int main(int argc,char **argv) {
         }
 
         QNRunResult result={0};
-        st=qn_vm_run_guarded_with_inputs(
+        st=qn_vm_run_guarded_with_device(
             &bc,
             options.shots,
             options.seed,
             &options.policy,
             &qvm_route,
             runtime_inputs.provided ? &runtime_inputs : NULL,
+            &options.device,
             &result,
             &diag
         );

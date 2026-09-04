@@ -2,9 +2,9 @@ name: QBIT NOVA Native CI
 
 on:
   push:
-    branches: ["main"]
+    branches: ["main", "stage7-step9-native-tensor-memory", "stage8-step1-isolated-gpio-output"]
   pull_request:
-    branches: ["main"]
+    branches: ["main", "stage7-step9-native-tensor-memory"]
 
 permissions:
   contents: read

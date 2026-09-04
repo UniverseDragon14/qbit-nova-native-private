@@ -3,6 +3,7 @@
 
 #include "qn_qbc.h"
 #include "qn_gpu_routing.h"
+#include "qn_device.h"
 
 typedef struct {
     uint32_t values[QN_MAX_RUNTIME_INPUTS];
@@ -55,6 +56,8 @@ typedef struct {
     uint16_t runtime_input_abi;
     uint16_t runtime_input_count;
     uint8_t runtime_input_digest[32];
+    bool native_device_result;
+    QNDeviceResult device;
     QNHistogramEntry *entries;
     size_t entry_count;
     uint8_t qbc_digest[32];
@@ -74,6 +77,15 @@ QNStatus qn_vm_run_guarded_with_inputs(const QNBytecode *bc,
                                        const QNGuardPolicy *policy,
                                        const QNGpuQvmRoute *route,
                                        const QNRuntimeInputs *inputs,
+                                       QNRunResult *out,
+                                       QNDiagnostic *diag);
+QNStatus qn_vm_run_guarded_with_device(const QNBytecode *bc,
+                                       uint32_t shots,
+                                       uint64_t seed,
+                                       const QNGuardPolicy *policy,
+                                       const QNGpuQvmRoute *route,
+                                       const QNRuntimeInputs *inputs,
+                                       const QNDeviceOptions *device_options,
                                        QNRunResult *out,
                                        QNDiagnostic *diag);
 void qn_print_result(const QNBytecode *bc, const QNRunResult *result, FILE *stream);

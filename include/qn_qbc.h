@@ -35,6 +35,9 @@ typedef enum {
     OP_REPEAT_NEXT = 0x65,
     OP_CALL = 0x66,
     OP_RETURN = 0x67,
+    OP_GPIO_CONFIG = 0x70,
+    OP_GPIO_WRITE = 0x71,
+    OP_DEVICE_EMIT = 0x72,
     OP_END = 0x7f
 } QNOpcode;
 
@@ -108,6 +111,7 @@ bool qn_qbc_has_control_flow(const QNBytecode *bc);
 bool qn_qbc_has_bounded_repeat(const QNBytecode *bc);
 bool qn_qbc_has_functions(const QNBytecode *bc);
 bool qn_qbc_has_runtime_inputs(const QNBytecode *bc);
+bool qn_qbc_is_gpio_output_program(const QNBytecode *bc);
 bool qn_qbc_execution_step_bound(const QNBytecode *bc, uint64_t *steps_out);
 
 #endif

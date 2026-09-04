@@ -27,6 +27,10 @@
 #define QN_MAX_CALL_DEPTH 8u
 #define QN_MAX_RUNTIME_INPUTS 16u
 
+/* Stage8 Step1 bounded GPIO output limits. */
+#define QN_MAX_GPIO_LINE_OFFSET 63u
+#define QN_MAX_DEVICE_HOLD_MS 5000u
+
 /* Stage7 Step9 native tensor limits. */
 #define QN_MAX_TENSORS 16u
 #define QN_MAX_TENSOR_ELEMENTS 65536u

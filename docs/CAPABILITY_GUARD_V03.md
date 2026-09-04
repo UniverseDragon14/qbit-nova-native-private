@@ -36,6 +36,9 @@ stage.
 
 ## Security boundary
 
-No source statement or bytecode opcode currently performs shell execution,
-network access, arbitrary file writes, credential access, persistence,
-exploitation or device control.
+This document describes the original v0.3 boundary. Stage8 Step1 later adds a
+strictly bounded GPIO-output opcode family behind the existing
+approval-mandatory `device.control` capability. Shell execution, network
+access, arbitrary file writes, credential access, persistence and exploitation
+remain unavailable. See `DEVICE_GPIO_V08_STEP1.md` for the current device
+boundary.

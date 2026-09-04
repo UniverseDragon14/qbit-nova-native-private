@@ -1325,6 +1325,7 @@ const char *qn_qir_type_name(QNQIRType type) {
         case QIR_TYPE_U32_VECTOR: return "u32vec<256>";
         case QIR_TYPE_U32: return "u32";
         case QIR_TYPE_BOOL: return "bool";
+        case QIR_TYPE_DEVICE: return "device";
         default: return "invalid";
     }
 }
@@ -1361,17 +1362,144 @@ const char *qn_qir_opcode_name(QNQIROpcode opcode) {
         case QIR_OP_REPEAT_NEXT: return "REPEAT.NEXT";
         case QIR_OP_CALL: return "CALL";
         case QIR_OP_RETURN: return "RETURN";
+        case QIR_OP_GPIO_CONFIG: return "GPIO.CONFIG";
+        case QIR_OP_GPIO_WRITE: return "GPIO.WRITE";
+        case QIR_OP_DEVICE_EMIT: return "DEVICE.EMIT";
         default: return "INVALID";
     }
+}
+
+static bool stage8_program_has_device_statement(const QNProgram *program) {
+    if (!program) return false;
+    for (size_t i = 0u; i < program->count; ++i) {
+        if (program->items[i].kind == STMT_DEVICE_GPIO ||
+            program->items[i].kind == STMT_DEVICE_WRITE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static QNQIRValue stage8_device_value(const char *name) {
+    QNQIRValue value;
+    memset(&value, 0, sizeof(value));
+    value.type = QIR_TYPE_DEVICE;
+    value.register_id = 0u;
+    snprintf(value.name, sizeof(value.name), "%s", name ? name : "");
+    return value;
+}
+
+static QNStatus qn_qir_build_stage8_gpio_program(
+    const QNProgram *program,
+    const uint8_t source_digest[32],
+    QNQIRProgram *out,
+    QNDiagnostic *diag
+) {
+    memset(out, 0, sizeof(*out));
+    memcpy(out->source_digest, source_digest, 32);
+    out->default_shots = 1u;
+    out->default_seed = 1u;
+
+    if (program->function_count != 0u || program->input_count != 0u) {
+        qn_diag_set_code(diag, "QN-E7803", 1, 1,
+                         "GPIO programs cannot contain functions or runtime inputs");
+        goto fail;
+    }
+
+    bool requirement_seen = false;
+    bool declaration_seen = false;
+    bool write_seen = false;
+    bool emit_seen = false;
+    char device_name[QN_NAME_CAP] = {0};
+
+    for (size_t i = 0u; i < program->count; ++i) {
+        const QNStmt *stmt = &program->items[i];
+        QNQIRInstruction ins;
+        memset(&ins, 0, sizeof(ins));
+        ins.line = stmt->line;
+        ins.column = stmt->column;
+
+        switch (stmt->kind) {
+            case STMT_REQUIRES:
+                if (requirement_seen ||
+                    strcmp(stmt->as.requires.capability, "device.control") != 0) {
+                    qn_diag_set_code(diag, "QN-E7804", stmt->line, stmt->column,
+                                     "GPIO programs require exactly one 'requires device.control'");
+                    goto fail;
+                }
+                requirement_seen = true;
+                break;
+
+            case STMT_DEVICE_GPIO:
+                if (declaration_seen || write_seen || emit_seen) {
+                    qn_diag_set_code(diag, "QN-E7805", stmt->line, stmt->column,
+                                     "GPIO program permits one device declaration before write and emit");
+                    goto fail;
+                }
+                declaration_seen = true;
+                snprintf(device_name, sizeof(device_name), "%s",
+                         stmt->as.device_gpio.name);
+                ins.opcode = QIR_OP_GPIO_CONFIG;
+                ins.out = stage8_device_value(device_name);
+                ins.imm = stmt->as.device_gpio.line_offset;
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+
+            case STMT_DEVICE_WRITE:
+                if (!declaration_seen || write_seen || emit_seen ||
+                    strcmp(stmt->as.device_write.name, device_name) != 0) {
+                    qn_diag_set_code(diag, "QN-E7806", stmt->line, stmt->column,
+                                     "GPIO write must reference the single declared device exactly once");
+                    goto fail;
+                }
+                write_seen = true;
+                ins.opcode = QIR_OP_GPIO_WRITE;
+                ins.a = stage8_device_value(device_name);
+                ins.imm = stmt->as.device_write.high ? 1u : 0u;
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+
+            case STMT_EMIT:
+                if (!write_seen || emit_seen ||
+                    strcmp(stmt->as.emit.name, device_name) != 0) {
+                    qn_diag_set_code(diag, "QN-E7807", stmt->line, stmt->column,
+                                     "GPIO emit must follow write and reference the declared device");
+                    goto fail;
+                }
+                emit_seen = true;
+                ins.opcode = QIR_OP_DEVICE_EMIT;
+                ins.a = stage8_device_value(device_name);
+                if (!append_qir(out, ins, diag)) goto fail;
+                break;
+
+            default:
+                qn_diag_set_code(diag, "QN-E7803", stmt->line, stmt->column,
+                                 "GPIO programs cannot mix device control with other language modes");
+                goto fail;
+        }
+    }
+
+    if (!requirement_seen || !declaration_seen || !write_seen || !emit_seen) {
+        qn_diag_set_code(diag, "QN-E7808", 1, 1,
+                         "GPIO program requires capability, declaration, one write, and one emit");
+        goto fail;
+    }
+
+    out->capability_mask = QN_CAP_DEVICE_CONTROL | QN_CAP_EVIDENCE_EMIT;
+    return QN_OK;
+
+fail:
+    qn_qir_free(out);
+    return QN_ERR_SEMANTIC;
 }
 
 
 /* ============================================================
  * Stage7 Step9A native tensor frontend / metadata path.
  *
- * This phase intentionally stops before QBC v10 lowering.
- * It proves parser + typed metadata + bounded memory contracts
- * without modifying the frozen QBC v1-v9 encoder/decoder.
+ * This tensor phase intentionally stops before tensor bytecode lowering.
+ * It proves parser + typed metadata + bounded memory contracts. The isolated
+ * Stage8 GPIO QBC v10 contract does not serialize tensor metadata.
  * ============================================================ */
 
 static bool step9_program_has_tensor_declaration(const QNProgram *program) {
@@ -1579,8 +1707,8 @@ static QNStatus qn_qir_build_step9_tensor_metadata_program(
 
     /*
      * Step9A is metadata-only.
-     * QBC v10 / execution opcodes intentionally remain unimplemented
-     * until the next gate.
+     * Tensor execution opcodes intentionally remain unimplemented until the
+     * native-data gate. QBC v10 is currently scoped only to bounded GPIO.
      */
     out->capability_mask = 0u;
 
@@ -1596,6 +1724,17 @@ QNStatus qn_qir_build(const QNProgram *program,
                       QNQIRProgram *out,
                       QNDiagnostic *diag) {
 
+    if (!program || !source_digest || !out || !diag) {
+        if (diag) qn_diag_set(diag, 0, 0, "invalid QIR build arguments");
+        return QN_ERR_RUNTIME;
+    }
+
+    if (stage8_program_has_device_statement(program)) {
+        return qn_qir_build_stage8_gpio_program(
+            program, source_digest, out, diag
+        );
+    }
+
     if (step9_program_has_tensor_declaration(program)) {
         return qn_qir_build_step9_tensor_metadata_program(
             program,
@@ -1606,12 +1745,6 @@ QNStatus qn_qir_build(const QNProgram *program,
     }
 
 
-    if (!program || !source_digest || !out || !diag) {
-        if (diag) {
-            qn_diag_set(diag, 0, 0, "invalid QIR build arguments");
-        }
-        return QN_ERR_RUNTIME;
-    }
     if (program->input_count > 0u) {
         return qn_qir_build_runtime_input_program(program, source_digest, out, diag);
     }
@@ -2520,6 +2653,20 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
                 dst->opcode = OP_RETURN;
                 dst->a = (uint8_t)src->a.register_id;
                 break;
+            case QIR_OP_GPIO_CONFIG:
+                dst->opcode = OP_GPIO_CONFIG;
+                dst->a = (uint8_t)src->out.register_id;
+                dst->imm = src->imm;
+                break;
+            case QIR_OP_GPIO_WRITE:
+                dst->opcode = OP_GPIO_WRITE;
+                dst->a = (uint8_t)src->a.register_id;
+                dst->b = (uint8_t)src->imm;
+                break;
+            case QIR_OP_DEVICE_EMIT:
+                dst->opcode = OP_DEVICE_EMIT;
+                dst->a = (uint8_t)src->a.register_id;
+                break;
             default:
                 qn_diag_set(diag, src->line, src->column,
                             "cannot lower QIR opcode %d",
@@ -2530,7 +2677,13 @@ QNStatus qn_qir_lower(const QNQIRProgram *qir,
     }
 
     out->instructions[out->instruction_count - 1u].opcode = OP_END;
-    if (qn_qbc_has_functions(out)) {
+    if ((out->capability_mask & QN_CAP_DEVICE_CONTROL) != 0u &&
+        !qn_qbc_is_gpio_output_program(out)) {
+        qn_diag_set_code(diag, "QN-E7810", 0, 0,
+                         "GPIO QBC contract invalid after lowering");
+        qn_bytecode_free(out);
+        return QN_ERR_QBC;
+    } else if (qn_qbc_has_functions(out)) {
         uint64_t step_bound = 0u;
         if (!qn_qbc_execution_step_bound(out, &step_bound) ||
             step_bound > QN_MAX_EXECUTION_STEPS) {
@@ -2599,6 +2752,10 @@ static void dump_value(const QNQIRProgram *qir,
             fprintf(stream, "bool %s@%u", value->name,
                     value->register_id);
             break;
+        case QIR_TYPE_DEVICE:
+            fprintf(stream, "device %s@%u", value->name,
+                    value->register_id);
+            break;
         default:
             fprintf(stream, "none");
             break;
@@ -2622,7 +2779,16 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
             has_control_flow = true;
         }
     }
-    if (qir->input_count > 0u) {
+    bool has_device = false;
+    for (size_t i = 0u; i < qir->instruction_count; ++i) {
+        if (qir->instructions[i].opcode == QIR_OP_GPIO_CONFIG) {
+            has_device = true;
+            break;
+        }
+    }
+    if (has_device) {
+        fprintf(stream, "QBIT_NOVA_DEVICE_QIR_V08_STEP1\n");
+    } else if (qir->input_count > 0u) {
         fprintf(stream, "QBIT_NOVA_TYPED_QIR_V07_STEP7\n");
     } else if (qir->function_count > 0u) {
         fprintf(stream, "QBIT_NOVA_TYPED_QIR_V06_STEP6\n");
@@ -2773,6 +2939,17 @@ void qn_qir_dump(const QNQIRProgram *qir, FILE *stream) {
                 dump_value(qir, &ins->out, stream);
                 break;
             case QIR_OP_RETURN:
+                dump_value(qir, &ins->a, stream);
+                break;
+            case QIR_OP_GPIO_CONFIG:
+                dump_value(qir, &ins->out, stream);
+                fprintf(stream, " gpio line=%u", ins->imm);
+                break;
+            case QIR_OP_GPIO_WRITE:
+                dump_value(qir, &ins->a, stream);
+                fprintf(stream, " <- %s", ins->imm ? "high" : "low");
+                break;
+            case QIR_OP_DEVICE_EMIT:
                 dump_value(qir, &ins->a, stream);
                 break;
             default:

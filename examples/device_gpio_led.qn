@@ -1,0 +1,6 @@
+# Stage8 Step1 bounded GPIO output.
+# "pin" is the GPIO character-device line offset, not a physical header pin.
+requires device.control
+device led0 gpio pin = 21
+write led0 high
+emit led0

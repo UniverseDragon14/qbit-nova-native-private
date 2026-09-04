@@ -1070,12 +1070,13 @@ static QNStatus qn_vm_run_typed_scalar(
     return QN_OK;
 }
 
-QNStatus qn_vm_run_guarded_with_inputs(const QNBytecode *bc,
+QNStatus qn_vm_run_guarded_with_device(const QNBytecode *bc,
                                        uint32_t shots,
                                        uint64_t seed,
                                        const QNGuardPolicy *policy,
                                        const QNGpuQvmRoute *route,
                                        const QNRuntimeInputs *runtime_inputs,
+                                       const QNDeviceOptions *device_options,
                                        QNRunResult *out,
                                        QNDiagnostic *diag) {
     if (!bc || !policy || !route || !out) {
@@ -1098,6 +1099,39 @@ QNStatus qn_vm_run_guarded_with_inputs(const QNBytecode *bc,
     );
     if (status != QN_OK) {
         return status;
+    }
+
+    if (qn_qbc_is_gpio_output_program(bc)) {
+        if (shots != 0u || seed != 0u || runtime_inputs != NULL) {
+            qn_diag_set_code(diag, "QN-E7818", 0, 0,
+                             "GPIO programs do not accept shots, seed, or runtime inputs");
+            qn_run_result_free(out);
+            return QN_ERR_PARSE;
+        }
+        QNDeviceOptions safe_options;
+        if (!device_options) {
+            qn_device_options_safe(&safe_options);
+            device_options = &safe_options;
+        }
+        if (device_options->backend == QN_DEVICE_BACKEND_LINUX_GPIO &&
+            strcmp(policy->approval_scheme, "ed25519") != 0) {
+            qn_diag_set_code(diag, "QN-E7820", 0, 0,
+                             "physical GPIO requires Ed25519 approval");
+            qn_run_result_free(out);
+            return QN_ERR_RUNTIME;
+        }
+        status = qn_device_execute_gpio(bc, device_options,
+                                        &out->device, diag);
+        if (status != QN_OK) {
+            qn_run_result_free(out);
+            return status;
+        }
+        out->native_device_result = true;
+        out->shots = 1u;
+        out->seed = 0u;
+        out->qvm_gpu_execution_attempted = false;
+        out->qvm_gpu_execution_completed = false;
+        return QN_OK;
     }
 
     if (qn_qbc_is_bounded_u32_vector_add(bc)) {
@@ -1244,6 +1278,22 @@ QNStatus qn_vm_run_guarded_with_inputs(const QNBytecode *bc,
 
     free(amp);
     return QN_OK;
+}
+
+QNStatus qn_vm_run_guarded_with_inputs(const QNBytecode *bc,
+                                       uint32_t shots,
+                                       uint64_t seed,
+                                       const QNGuardPolicy *policy,
+                                       const QNGpuQvmRoute *route,
+                                       const QNRuntimeInputs *runtime_inputs,
+                                       QNRunResult *out,
+                                       QNDiagnostic *diag) {
+    QNDeviceOptions device_options;
+    qn_device_options_safe(&device_options);
+    return qn_vm_run_guarded_with_device(
+        bc, shots, seed, policy, route, runtime_inputs,
+        &device_options, out, diag
+    );
 }
 
 static void print_bits(FILE *f, uint64_t state, unsigned n) {
@@ -1399,6 +1449,34 @@ void qn_print_result(const QNBytecode *bc,
         capability_text,
         sizeof(capability_text)
     );
+
+    if (result->native_device_result) {
+        fprintf(stream, "QBIT_NOVA_DEVICE_RUN_V08_STEP1\n");
+        fprintf(stream, "boundary=bounded_gpio_output\n");
+        fprintf(stream, "physical_qpu=false\n");
+        fprintf(stream, "physical_device=%s\n",
+                result->device.mock ? "false" : "true");
+        fprintf(stream, "source_sha256=%s\n", source_hex);
+        fprintf(stream, "qbc_sha256=%s\n", qbc_hex);
+        fprintf(stream, "capabilities=%s\n", capability_text);
+        fprintf(stream, "guard=allowed\n");
+        qn_print_approval_lines(result, stream);
+        qn_print_route_lines(result, stream);
+        fprintf(stream, "qbc_version=10\n");
+        fprintf(stream, "device_contract=bounded-gpio-output-v1\n");
+        fprintf(stream, "device_backend=%s\n", result->device.backend);
+        fprintf(stream, "gpiochip=%s\n", result->device.gpiochip);
+        fprintf(stream, "gpio_line_offset=%u\n", result->device.line_offset);
+        fprintf(stream, "requested_value=%s\n",
+                result->device.value_high ? "high" : "low");
+        fprintf(stream, "hold_ms=%u\n", result->device.hold_ms);
+        fprintf(stream, "write_executed=%s\n",
+                result->device.write_executed ? "true" : "false");
+        fprintf(stream, "safety_reset_low=%s\n",
+                result->device.reset_low ? "true" : "false");
+        fprintf(stream, "mock=%s\n", result->device.mock ? "true" : "false");
+        return;
+    }
 
     if (result->native_scalar_result) {
         char output_hex[65];
@@ -2134,6 +2212,50 @@ static QNStatus qn_write_compute_receipt(
     return QN_OK;
 }
 
+static QNStatus qn_write_device_receipt(
+    FILE *stream,
+    const QNBytecode *bc,
+    const QNRunResult *result
+) {
+    char qbc_hex[65];
+    char source_hex[65];
+    char capability_text[256];
+    qn_hex32(result->qbc_digest, qbc_hex);
+    qn_hex32(bc->source_digest, source_hex);
+    qn_capability_format(bc->capability_mask,
+                         capability_text,
+                         sizeof(capability_text));
+
+    fprintf(stream, "{\n");
+    fprintf(stream, "  \"marker\": \"QBIT_NOVA_DEVICE_RECEIPT_V08_STEP1\",\n");
+    fprintf(stream, "  \"creator\": \"Universal Dragon Aslam\",\n");
+    fprintf(stream, "  \"boundary\": \"bounded_gpio_output\",\n");
+    fprintf(stream, "  \"physical_qpu\": false,\n");
+    fprintf(stream, "  \"physical_device\": %s,\n",
+            result->device.mock ? "false" : "true");
+    fprintf(stream, "  \"guard\": \"allowed\",\n");
+    fprintf(stream, "  \"capabilities\": \"%s\",\n", capability_text);
+    qn_write_approval_json(stream, result);
+    qn_write_route_json(stream, result);
+    fprintf(stream, "  \"qbc_version\": 10,\n");
+    fprintf(stream, "  \"device_contract\": \"bounded-gpio-output-v1\",\n");
+    fprintf(stream, "  \"device_backend\": \"%s\",\n", result->device.backend);
+    fprintf(stream, "  \"gpiochip\": \"%s\",\n", result->device.gpiochip);
+    fprintf(stream, "  \"gpio_line_offset\": %u,\n", result->device.line_offset);
+    fprintf(stream, "  \"requested_value\": \"%s\",\n",
+            result->device.value_high ? "high" : "low");
+    fprintf(stream, "  \"hold_ms\": %u,\n", result->device.hold_ms);
+    fprintf(stream, "  \"write_executed\": %s,\n",
+            result->device.write_executed ? "true" : "false");
+    fprintf(stream, "  \"safety_reset_low\": %s,\n",
+            result->device.reset_low ? "true" : "false");
+    fprintf(stream, "  \"mock\": %s,\n", result->device.mock ? "true" : "false");
+    fprintf(stream, "  \"source_sha256\": \"%s\",\n", source_hex);
+    fprintf(stream, "  \"qbc_sha256\": \"%s\"\n", qbc_hex);
+    fprintf(stream, "}\n");
+    return QN_OK;
+}
+
 QNStatus qn_write_receipt(const char *path,
                           const QNBytecode *bc,
                           const QNRunResult *result,
@@ -2145,7 +2267,9 @@ QNStatus qn_write_receipt(const char *path,
         return QN_ERR_IO;
     }
 
-    if (result->native_scalar_result &&
+    if (result->native_device_result) {
+        qn_write_device_receipt(stream, bc, result);
+    } else if (result->native_scalar_result &&
         qn_qbc_has_runtime_inputs(bc)) {
         qn_write_runtime_input_receipt(stream, bc, result);
     } else if (result->native_scalar_result &&

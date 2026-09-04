@@ -43,7 +43,9 @@ typedef enum {
     STMT_REPEAT,
     STMT_CALL,
     STMT_RETURN,
-    STMT_TENSOR_DECL
+    STMT_TENSOR_DECL,
+    STMT_DEVICE_GPIO,
+    STMT_DEVICE_WRITE
 } QNStmtKind;
 
 typedef enum {
@@ -78,6 +80,14 @@ struct QNStmt {
             QNTensorElementType element_type;
             uint32_t element_count;
         } tensor_decl;
+        struct {
+            char name[QN_NAME_CAP];
+            uint32_t line_offset;
+        } device_gpio;
+        struct {
+            char name[QN_NAME_CAP];
+            bool high;
+        } device_write;
         struct {
             char output[QN_NAME_CAP];
             char left[QN_NAME_CAP];

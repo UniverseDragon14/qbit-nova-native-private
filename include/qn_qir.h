@@ -11,7 +11,8 @@ typedef enum {
     QIR_TYPE_RESULT,
     QIR_TYPE_U32_VECTOR,
     QIR_TYPE_U32,
-    QIR_TYPE_BOOL
+    QIR_TYPE_BOOL,
+    QIR_TYPE_DEVICE
 } QNQIRType;
 
 typedef enum {
@@ -44,7 +45,10 @@ typedef enum {
     QIR_OP_REPEAT_ENTER,
     QIR_OP_REPEAT_NEXT,
     QIR_OP_CALL,
-    QIR_OP_RETURN
+    QIR_OP_RETURN,
+    QIR_OP_GPIO_CONFIG,
+    QIR_OP_GPIO_WRITE,
+    QIR_OP_DEVICE_EMIT
 } QNQIROpcode;
 
 typedef struct {

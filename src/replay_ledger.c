@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #ifndef O_CLOEXEC
@@ -475,7 +476,8 @@ static QNStatus open_for_consume(
     bool *created_out,
     QNDiagnostic *diag
 ) {
-    for (int attempt = 0; attempt < 3; ++attempt) {
+    enum { CREATE_VISIBILITY_RETRIES = 64 };
+    for (int attempt = 0; attempt < CREATE_VISIBILITY_RETRIES; ++attempt) {
         int fd;
 
         do {
@@ -489,6 +491,29 @@ static QNStatus open_for_consume(
         } while (fd < 0 && errno == EINTR);
 
         if (fd >= 0) {
+            /*
+             * An O_EXCL creator publishes the directory entry before it can
+             * acquire the file lock and initialize QNRL1. A concurrent opener
+             * must not misclassify that short visibility window as a corrupt
+             * pre-existing ledger. Never wait while holding the file lock;
+             * close, yield briefly, and reopen so the creator can proceed.
+             */
+            struct stat metadata;
+            if (fstat(fd, &metadata) != 0) {
+                int saved_errno = errno;
+                (void)close(fd);
+                qn_diag_set_code(diag, "QN-E5202", 0, 0,
+                                 "cannot inspect replay ledger '%s': %s",
+                                 path->name, strerror(saved_errno));
+                return QN_ERR_IO;
+            }
+            if (metadata.st_size == 0 &&
+                attempt + 1 < CREATE_VISIBILITY_RETRIES) {
+                (void)close(fd);
+                struct timespec delay = {.tv_sec = 0, .tv_nsec = 1000000L};
+                while (nanosleep(&delay, &delay) < 0 && errno == EINTR) {}
+                continue;
+            }
             *fd_out = fd;
             *created_out = false;
             return QN_OK;

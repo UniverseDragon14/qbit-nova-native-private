@@ -20,6 +20,8 @@ Rules:
 - Reads use a shared POSIX advisory file lock.
 - Consumption uses an exclusive POSIX advisory file lock.
 - Check and append occur inside one exclusive critical section.
+- Concurrent first-open callers tolerate the bounded zero-byte publication
+  window while the O_EXCL creator acquires the lock and writes `QNRL1`.
 - The ledger file is synchronized with `fsync`.
 - A newly created ledger also synchronizes its parent directory.
 - Malformed, empty-existing, oversized, or unsupported ledgers fail closed.

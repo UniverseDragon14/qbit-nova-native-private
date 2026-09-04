@@ -13,6 +13,7 @@
 #define QBC_V7_HEADER_SIZE 88u
 #define QBC_V8_HEADER_SIZE 96u
 #define QBC_V9_HEADER_SIZE 104u
+#define QBC_V10_HEADER_SIZE 104u
 #define QBC_REG_SIZE 68u
 #define QBC_FUNC_SIZE 12u
 #define QBC_INPUT_SIZE 36u
@@ -22,6 +23,45 @@ void qn_bytecode_free(QNBytecode *bc) {
     if (!bc) return;
     free(bc->instructions);
     memset(bc, 0, sizeof(*bc));
+}
+
+bool qn_qbc_is_gpio_output_program(const QNBytecode *bc) {
+    if (!bc || !bc->instructions || bc->total_qubits != 0u ||
+        bc->register_count != 0u || bc->scalar_count != 0u ||
+        bc->scalar_bool_mask != 0u || bc->function_count != 0u ||
+        bc->input_count != 0u || bc->initial_basis != 0u ||
+        bc->main_entry_pc != 0u || bc->input_abi_version != 0u ||
+        bc->default_shots != 1u || bc->default_seed != 1u ||
+        bc->instruction_count != 4u ||
+        bc->capability_mask !=
+            (QN_CAP_DEVICE_CONTROL | QN_CAP_EVIDENCE_EMIT)) {
+        return false;
+    }
+
+    const QNInstruction *config = &bc->instructions[0];
+    const QNInstruction *write = &bc->instructions[1];
+    const QNInstruction *emit = &bc->instructions[2];
+    const QNInstruction *end = &bc->instructions[3];
+
+    return config->opcode == OP_GPIO_CONFIG && config->a == 0u &&
+           config->b == 0u && config->flags == 0u &&
+           config->imm <= QN_MAX_GPIO_LINE_OFFSET &&
+           write->opcode == OP_GPIO_WRITE && write->a == 0u &&
+           write->b <= 1u && write->flags == 0u && write->imm == 0u &&
+           emit->opcode == OP_DEVICE_EMIT && emit->a == 0u &&
+           emit->b == 0u && emit->flags == 0u && emit->imm == 0u &&
+           end->opcode == OP_END && end->a == 0u && end->b == 0u &&
+           end->flags == 0u && end->imm == 0u;
+}
+
+static bool qn_qbc_contains_device_opcode(const QNBytecode *bc) {
+    if (!bc || !bc->instructions) return false;
+    for (size_t i = 0u; i < bc->instruction_count; ++i) {
+        uint8_t opcode = bc->instructions[i].opcode;
+        if (opcode == OP_GPIO_CONFIG || opcode == OP_GPIO_WRITE ||
+            opcode == OP_DEVICE_EMIT) return true;
+    }
+    return false;
 }
 
 bool qn_qbc_is_bounded_u32_vector_add(const QNBytecode *bc) {
@@ -1374,11 +1414,28 @@ QNStatus qn_qbc_encode(const QNBytecode *bc,
                        uint8_t **data_out,
                        size_t *size_out,
                        QNDiagnostic *diag) {
+    if (!bc || !data_out || !size_out || !diag) {
+        if (diag) qn_diag_set_code(diag, "QN-E-QBC-ARG-001", 0, 0,
+                                   "invalid QBC encode arguments");
+        return QN_ERR_QBC;
+    }
+    *data_out = NULL;
+    *size_out = 0u;
+
+    bool has_device = qn_qbc_contains_device_opcode(bc) ||
+                      (bc && (bc->capability_mask & QN_CAP_DEVICE_CONTROL) != 0u);
+    if (has_device && !qn_qbc_is_gpio_output_program(bc)) {
+        qn_diag_set_code(diag, "QN-E7810", 0, 0,
+                         "QBC v10 GPIO output contract invalid");
+        return QN_ERR_QBC;
+    }
     bool has_runtime_inputs = qn_qbc_has_runtime_inputs(bc);
     bool has_functions = qn_qbc_has_functions(bc);
     bool has_bounded_repeat = qn_qbc_has_bounded_repeat(bc);
     bool has_control_flow = qn_qbc_has_control_flow(bc);
-    uint16_t version = has_runtime_inputs
+    uint16_t version = has_device
+        ? 10u
+        : (has_runtime_inputs
         ? 9u
         : (has_functions
             ? 8u
@@ -1388,14 +1445,16 @@ QNStatus qn_qbc_encode(const QNBytecode *bc,
                     ? 6u
                     : (bc->scalar_bool_mask != 0u
                         ? 5u
-                        : (bc->scalar_count > 0u ? 4u : 3u)))));
-    uint16_t header_size = version == 9u
+                        : (bc->scalar_count > 0u ? 4u : 3u))))));
+    uint16_t header_size = version == 10u
+        ? QBC_V10_HEADER_SIZE
+        : (version == 9u
         ? QBC_V9_HEADER_SIZE
         : (version == 8u
             ? QBC_V8_HEADER_SIZE
             : (version >= 5u
                 ? QBC_V5_HEADER_SIZE
-                : (version == 4u ? QBC_V4_HEADER_SIZE : QBC_V3_HEADER_SIZE)));
+                : (version == 4u ? QBC_V4_HEADER_SIZE : QBC_V3_HEADER_SIZE))));
     size_t size =
         header_size +
         bc->register_count * QBC_REG_SIZE +
@@ -1481,6 +1540,11 @@ QNStatus qn_qbc_decode(const uint8_t *data,
                        size_t size,
                        QNBytecode *out,
                        QNDiagnostic *diag) {
+    if (!data || !out || !diag) {
+        if (diag) qn_diag_set_code(diag, "QN-E-QBC-ARG-001", 0, 0,
+                                   "invalid QBC decode arguments");
+        return QN_ERR_QBC;
+    }
     memset(out, 0, sizeof(*out));
 
     if (size < QBC_V1_HEADER_SIZE ||
@@ -1500,7 +1564,8 @@ QNStatus qn_qbc_decode(const uint8_t *data,
           (version == 6u && header_size == QBC_V6_HEADER_SIZE) ||
           (version == 7u && header_size == QBC_V7_HEADER_SIZE) ||
           (version == 8u && header_size == QBC_V8_HEADER_SIZE) ||
-          (version == 9u && header_size == QBC_V9_HEADER_SIZE))) {
+          (version == 9u && header_size == QBC_V9_HEADER_SIZE) ||
+          (version == 10u && header_size == QBC_V10_HEADER_SIZE))) {
         qn_diag_set(diag, 0, 0,
                     "unsupported QBC version/header");
         return QN_ERR_QBC;
@@ -1526,6 +1591,16 @@ QNStatus qn_qbc_decode(const uint8_t *data,
     uint16_t input_record_size = version == 9u ? get16(data + 98) : 0u;
     uint16_t input_abi_version = version == 9u ? get16(data + 100) : 0u;
     uint16_t input_reserved = version == 9u ? get16(data + 102) : 0u;
+
+    if (version == 10u) {
+        for (size_t i = 78u; i < QBC_V10_HEADER_SIZE; ++i) {
+            if (data[i] != 0u) {
+                qn_diag_set_code(diag, "QN-E7810", 0, 0,
+                                 "QBC v10 reserved header bytes must be zero");
+                return QN_ERR_QBC;
+            }
+        }
+    }
 
     if (qubits > QN_MAX_QUBITS ||
         registers > QN_MAX_REGISTERS ||
@@ -1710,6 +1785,9 @@ QNStatus qn_qbc_decode(const uint8_t *data,
             case OP_REPEAT_NEXT:
             case OP_CALL:
             case OP_RETURN:
+            case OP_GPIO_CONFIG:
+            case OP_GPIO_WRITE:
+            case OP_DEVICE_EMIT:
             case OP_END:
                 break;
             default:
@@ -1717,6 +1795,15 @@ QNStatus qn_qbc_decode(const uint8_t *data,
                             "unknown QBC opcode 0x%02x", ins->opcode);
                 qn_bytecode_free(out);
                 return QN_ERR_QBC;
+        }
+
+        if ((ins->opcode == OP_GPIO_CONFIG ||
+             ins->opcode == OP_GPIO_WRITE ||
+             ins->opcode == OP_DEVICE_EMIT) && version != 10u) {
+            qn_diag_set_code(diag, "QN-E7810", 0, 0,
+                             "GPIO opcode requires QBC version 10");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
         }
 
         if (ins->opcode == OP_U32_VECTOR_ADD &&
@@ -1935,6 +2022,7 @@ QNStatus qn_qbc_decode(const uint8_t *data,
     bool contains_main_control_flow = false;
     bool contains_main_repeat = false;
     bool contains_functions = false;
+    bool contains_device = false;
     for (size_t i = 0; i < out->instruction_count; ++i) {
         uint8_t opcode = out->instructions[i].opcode;
         bool function_region =
@@ -1964,6 +2052,16 @@ QNStatus qn_qbc_decode(const uint8_t *data,
         }
         if (opcode == OP_CALL || opcode == OP_RETURN)
             contains_functions = true;
+        if (opcode == OP_GPIO_CONFIG || opcode == OP_GPIO_WRITE ||
+            opcode == OP_DEVICE_EMIT) contains_device = true;
+    }
+
+    if (version == 10u &&
+        (!contains_device || contains_vector_opcode || contains_scalar_opcode)) {
+        qn_diag_set_code(diag, "QN-E7810", 0, 0,
+                         "QBC version 10 is reserved for the bounded GPIO contract");
+        qn_bytecode_free(out);
+        return QN_ERR_QBC;
     }
 
     if (contains_vector_opcode) {
@@ -2007,6 +2105,13 @@ QNStatus qn_qbc_decode(const uint8_t *data,
         if (!valid) {
             qn_diag_set_code(diag, "QN-E7509", 0, 0,
                              "QBC typed scalar program contract invalid");
+            qn_bytecode_free(out);
+            return QN_ERR_QBC;
+        }
+    } else if (contains_device) {
+        if (version != 10u || !qn_qbc_is_gpio_output_program(out)) {
+            qn_diag_set_code(diag, "QN-E7810", 0, 0,
+                             "QBC v10 GPIO output contract invalid");
             qn_bytecode_free(out);
             return QN_ERR_QBC;
         }

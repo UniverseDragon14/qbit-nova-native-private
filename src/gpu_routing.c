@@ -158,6 +158,7 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
         );
     }
 
+    bool device_program = qn_qbc_is_gpio_output_program(bc);
     bool scalar_program = qn_qbc_is_typed_scalar_program(bc);
     bool runtime_input_program = qn_qbc_has_runtime_inputs(bc);
     bool function_program = qn_qbc_has_functions(bc);
@@ -166,7 +167,9 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
     qn_gpu_route_set_text(
         out->operation,
         sizeof(out->operation),
-        scalar_program
+        device_program
+            ? "gpio-output-program"
+            : (scalar_program
             ? (runtime_input_program
                 ? "runtime-input-program"
                 : (function_program
@@ -178,7 +181,7 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
                             : (qn_qbc_has_control_flow(bc)
                                 ? "typed-control-flow-program"
                                 : "typed-scalar-program")))))
-            : "quantum-state-simulation"
+            : "quantum-state-simulation")
     );
 
     /*
@@ -216,11 +219,13 @@ QNStatus qn_gpu_route_qvm(QNGpuBackendRequest requested,
             qn_gpu_route_set_text(
                 out->selection_reason,
                 sizeof(out->selection_reason),
-                scalar_program
+                device_program
+                    ? "device-operation-not-gpu-eligible"
+                    : (scalar_program
                     ? "scalar-operation-not-gpu-eligible"
-                    : "qvm-operation-not-gpu-eligible"
+                    : "qvm-operation-not-gpu-eligible")
             );
-            out->cpu_fallback = true;
+            out->cpu_fallback = device_program ? false : true;
             return QN_OK;
 
         case QN_GPU_BACKEND_VULKAN:

@@ -1,0 +1,4 @@
+let device: u32 = 2
+let write: u32 = 3
+high = device + write
+emit high

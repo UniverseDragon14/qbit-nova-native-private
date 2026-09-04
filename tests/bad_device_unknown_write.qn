@@ -1,0 +1,4 @@
+requires device.control
+device led0 gpio pin = 21
+write led1 high
+emit led0
