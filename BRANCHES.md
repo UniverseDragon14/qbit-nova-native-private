@@ -1,6 +1,6 @@
 # QBIT NOVA Native Branch Map
 
-Inspected on **2026-09-01**. All **21 reachable branches** are accounted for. “Inspected code tip” records the implementation tip before this documentation audit; later README-only commits do not change the described code.
+Originally inspected on **2026-09-01** and extended on **2026-09-04**. All **22 reachable branches** are accounted for. “Inspected code tip” records the implementation tip; later proof/documentation-only commits may not change the described code.
 
 | Branch | Inspected code tip | Purpose / state |
 |---|---|---|
@@ -25,6 +25,7 @@ Inspected on **2026-09-01**. All **21 reachable branches** are accounted for. �
 | `stage7-step7-runtime-inputs` | `3e4dcf0ff753` | Runtime u32 inputs and QBC v9 |
 | `stage7-step8-function-control-flow` | `6749fa8187df` | Deterministic function control flow |
 | `stage7-step9-native-tensor-memory` | `f13ccf4e279a` | Frozen Stage7 Step9 tensor-memory checkpoint; default branch |
+| `stage8-step1-isolated-gpio-output` | `c88788cc8354` | Approval-gated bounded GPIO output, QBC v10, mock/Linux GPIO-v2 backends |
 
 ## Development line
 
@@ -34,6 +35,7 @@ Stage 5 approvals
   -> Stage 6 CPU/Vulkan routing
   -> Stage 7 typed u32 language and control flow
   -> Stage 7 Step9 tensor-memory checkpoint
+  -> Stage 8 isolated bounded GPIO output
   -> V10 f32/string/bytes frontend and QBC layout
   -> V10 audio/voice ABI
   -> V10 guardian security contracts
@@ -77,4 +79,4 @@ The inherited `MANIFEST.json` describes an older Stage5.1 snapshot. It is not an
 
 ## Visibility warning
 
-GitHub visibility is repository-wide, not branch-specific. Making this repository public exposes **all branch histories**, not just the default branch. Complete secret/history review before changing visibility.
+GitHub visibility is repository-wide, not branch-specific. The repository is public as of 2026-09-04, so **all branch histories** are exposed, not just the default branch. Continue full-history secret and binary/archive review before making a release claim.

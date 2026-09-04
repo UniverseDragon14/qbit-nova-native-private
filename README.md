@@ -1,8 +1,8 @@
 # QBIT NOVA Native
 
-**A native C17 programming language and deterministic QBC/QVM runtime with a software virtual QCPU and approval-first execution security — built on a Raspberry Pi 5.**
+**A native C17 programming language and deterministic QBC/QVM runtime with a software virtual QCPU and approval-first bounded device execution — built on a Raspberry Pi 5.**
 
-> Development repository — 21 inspected branches spanning Stage 5 through experimental V10 work.
+> Development repository — 22 accounted branches spanning Stage 5 through isolated Stage 8 and experimental V10 work.
 > Created by Universal Dragon Aslam
 
 ## Truth boundary
@@ -12,6 +12,7 @@ physical_qpu=false
 runtime=software_virtual_qcpu
 python_runtime_dependency=false
 release_class=research_preview
+device_control=bounded_gpio_output_preview
 ```
 
 QBIT NOVA does not claim that a Raspberry Pi 5 or ordinary software becomes a physical quantum computer. It implements quantum-state simulation and an approval-first native execution architecture. The verified claims listed below are tied to specific hashes or reproducible runs; planning/design documents are not runtime proof.
@@ -32,7 +33,7 @@ QBIT NOVA source (.qn)
   → Ed25519 signed approval (OpenSSL EVP)
   → trusted issuer store
   → replay ledger           (atomic, persistent)
-  → bounded execution
+  → bounded execution (QVM or explicit GPIO backend)
   → evidence receipt
 ```
 
@@ -83,6 +84,8 @@ Stage 7    — typed u32 native language core
   Step 7   — runtime u32 inputs, QBC v9
   Step 8   — deterministic function control flow
   Step 9   — native tensor memory (frozen checkpoint, default branch)
+Stage 8    — isolated bounded GPIO output, QBC v10, signed device approval,
+             mock backend and Linux GPIO character-device v2 backend
 V10        — f32/string/bytes frontend, canonical QBC v10 layout, CLI integration,
              conformance repair, CI regression, audio/voice ABI, guardian security
              contracts (split across dev branches; f32/string/bytes QBC path is
@@ -95,7 +98,7 @@ The complete branch-by-branch map with inspected commit tips is in [BRANCHES.md]
 
 ```text
 src/        native C17 implementation (lexer, parser, QIR, QBC, VM, guard,
-            approval, Ed25519, signed approval, replay)
+            approval, Ed25519, signed approval, replay, bounded GPIO)
 include/    public headers and contracts
 examples/   .qn programs (ghz3, bell, single, approval_model, blocked_shell)
 tests/      test runner and negative cases
@@ -113,7 +116,26 @@ docs/       per-stage design contracts and proofs
 | Trusted issuer store | Implemented |
 | Atomic persistent replay ledger | Implemented |
 | Token / issuer revocation store | Implemented |
+| `device.control` approval gate | Implemented |
+| GPIO backend default | Deny |
+| GPIO mock / Linux GPIO-v2 backend | Implemented in isolated Stage 8 branch |
 | `shell.exec` | Blocked by default |
+
+## Stage 8 bounded GPIO example
+
+```qn
+requires device.control
+device led0 gpio pin = 21
+write led0 high
+emit led0
+```
+
+The source declares a GPIO **line offset**, not a Raspberry Pi header-pin
+number. It cannot approve itself. Execution requires a separately signed
+`device.control` token plus an explicit backend. `mock` performs no hardware
+I/O; `linux-gpio` requires an explicit `/dev/gpiochipN`. A HIGH action is a
+bounded pulse (maximum 5000 ms) and is reset LOW before the line is released.
+See [docs/DEVICE_GPIO_V08_STEP1.md](docs/DEVICE_GPIO_V08_STEP1.md).
 
 ## Build and test
 
@@ -124,11 +146,15 @@ make
 make test
 ```
 
+The real V3D proof in the full integration suite requires supported Raspberry
+Pi V3D hardware. Portable GPIO verification uses the non-mutating mock backend;
+physical GPIO verification must be run separately on the intended Pi and chip.
+
 Strict flags: `-std=c17 -O2 -Wall -Wextra -Wpedantic -Werror`
 
 ## Publication safety
 
-The [publication security review](docs/PUBLICATION_SECURITY_REVIEW_20260901.md) accounted for 21 branches and 238 reachable/baseline text paths with no recognized secret signatures. Repository visibility remains **HOLD** until deleted historical blobs and binary/archive history receive a complete mirror-based scan.
+The [2026-09-01 publication security review](docs/PUBLICATION_SECURITY_REVIEW_20260901.md) accounted for the 21 branches that existed then and 238 reachable/baseline text paths with no recognized secret signatures. The repository is now public; that fact is not a security attestation. The isolated Stage8 implementation diff was scanned for common key/token signatures and adds no private keys, approval tokens, replay data, receipts, photos or videos. Deleted historical blobs and binary/archive history still require a complete mirror-based scan before a release claim.
 
 ## Project status
 
